@@ -1,83 +1,124 @@
-# X → 中文翻譯 → Discord Webhook（多 RSS + 翻譯容錯 + 新鮮度檢查）
+# X → 中文翻譯 → Discord Webhook（無 RSS 版）
 
-這一版新增兩層容錯：
+這一版完全移除 RSSHub。
 
-1. RSS 多來源容錯
-2. 翻譯容錯
-3. RSS 新鮮度檢查
+流程：
+
+X 公開嵌入時間線
+↓
+GitHub Actions
+↓
+解析最新貼文
+↓
+state.json 去重
+↓
+Google / MyMemory 翻譯
+↓
+Discord Webhook
+
+目標帳號：
+
+@WhereWindsMeet_
 
 ---
 
-## RSS 新鮮度檢查
+## GitHub Secret
 
-預設：
+現在只需要：
 
-MAX_FEED_AGE_DAYS=14
+DISCORD_WEBHOOK_URL
 
-如果某個 RSSHub 可以打開，但最新項目已經超過 14 天，
-程式會把它視為「可能停更」並自動嘗試下一個來源。
-
-如果 RSS 本身沒有可靠日期，程式不會直接淘汰它，
-避免正常來源被誤判。
+舊的 RSS_URL / RSS_URLS 可以刪掉，不再使用。
 
 ---
 
-## 翻譯容錯
+## 抓取方式
+
+程式會讀取 X/Twitter 的公開 profile syndication 頁：
+
+https://syndication.twitter.com/srv/timeline-profile/screen-name/WhereWindsMeet_
+
+從頁面中的 __NEXT_DATA__ JSON 抽取貼文。
+
+這不需要：
+
+- X API key
+- OAuth
+- X 登入
+- RSSHub
+
+注意：
+
+這屬於 X 的公開嵌入/展示端點，不是正式的開發者 timeline API。
+如果 X 未來修改頁面結構，程式仍可能需要更新。
+
+---
+
+## 過濾
+
+目前：
+
+- 只保留 @WhereWindsMeet_ 自己的貼文
+- 排除 Reply
+- 不依賴 RSS 的 retweet/filter 路由
+
+---
+
+## 翻譯
 
 第一順位：
 
 GoogleTranslator
 
-如果出現：
-
-- Error 500
-- Server Error
-- HTML 錯誤頁
-- Service Unavailable
-- Bad Gateway
-
-就自動切換：
+失敗時自動：
 
 MyMemoryTranslator
 
-如果第二個也失敗，就不再把錯誤頁發進 Discord，
-而是顯示：
+如果兩個都失敗：
+
+Discord 會顯示：
 
 ⚠️ 中文翻譯暫時失敗，請查看下方原文。
 
----
-
-## GitHub Secrets
-
-需要：
-
-DISCORD_WEBHOOK_URL
-
-RSS_URLS
-
-RSS_URLS 內容可以是一行一個來源。
-
-例如：
-
-https://rsshub.stsecurity.moe/twitter/user/WhereWindsMeet_/exclude_rts_replies
-https://rsshub.edwardcc.com/twitter/user/WhereWindsMeet_/exclude_rts_replies
-https://rsshub.isrss.com/twitter/user/WhereWindsMeet_/exclude_rts_replies
-https://rsshub.yfi.moe/twitter/user/WhereWindsMeet_/exclude_rts_replies
+不會再把 Error 500 HTML 當成翻譯內容。
 
 ---
 
-## GitHub Actions
+## 執行時間
 
 每小時：
 
 07 分
 37 分
 
-執行。
+約每 30 分鐘一次。
 
-使用：
+---
 
-actions/checkout@v5
-actions/setup-python@v6
+## 第一次測試
 
-避免舊版 Node.js 20 warning。
+GitHub：
+
+Actions
+→ X to Discord
+→ Run workflow
+
+目前：
+
+SEND_LATEST_ON_FIRST_RUN=true
+
+第一次成功抓取時會把目前最新一條發到 Discord，
+方便確認整條鏈路。
+
+之後 state.json 會防止重複發送。
+
+---
+
+## 你需要覆蓋的檔案
+
+main.py
+requirements.txt
+.github/workflows/x-to-discord.yml
+README.md
+
+舊 RSS Secret 已經不再需要。

@@ -4,204 +4,79 @@ import re
 import html
 import hashlib
 from pathlib import Path
-from urllib.parse import urlparse
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-import feedparser
 import requests
 from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator, MyMemoryTranslator
 
+X_HANDLE = os.environ.get("X_HANDLE", "WhereWindsMeet_").lstrip("@")
 DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
-
-RSS_URLS_RAW = os.environ.get("RSS_URLS", "").strip()
-SINGLE_RSS_URL = os.environ.get("RSS_URL", "").strip()
 
 WEBHOOK_NAME = os.environ.get("WEBHOOK_NAME", "燕雲官方情報")
 WEBHOOK_AVATAR = os.environ.get("WEBHOOK_AVATAR", "")
+SEND_LATEST_ON_FIRST_RUN = os.environ.get(
+    "SEND_LATEST_ON_FIRST_RUN", "true"
+).lower() == "true"
 
+REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "25"))
 STATE_FILE = Path("state.json")
 MAX_SEEN = 100
 
-SEND_LATEST_ON_FIRST_RUN = os.environ.get(
-    "SEND_LATEST_ON_FIRST_RUN", "false"
-).lower() == "true"
-
-REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
-
-# RSS 最新內容超過多少天，就視為「可訪問但內容可能已停更」
-MAX_FEED_AGE_DAYS = int(os.environ.get("MAX_FEED_AGE_DAYS", "14"))
+# X/Twitter 官方嵌入時間線頁。
+# 這不是 X 開發者 API，不需要 API key。
+TIMELINE_URL = (
+    "https://syndication.twitter.com/srv/timeline-profile/"
+    f"screen-name/{X_HANDLE}"
+)
 
 
-def get_rss_urls():
-    urls = []
-
-    if RSS_URLS_RAW:
-        chunks = []
-        for line in RSS_URLS_RAW.splitlines():
-            chunks.extend(line.split(","))
-
-        for item in chunks:
-            item = item.strip()
-            if item and item not in urls:
-                urls.append(item)
-
-    if SINGLE_RSS_URL and SINGLE_RSS_URL not in urls:
-        urls.append(SINGLE_RSS_URL)
-
-    if not urls:
-        raise RuntimeError("沒有設定 RSS_URLS 或 RSS_URL。")
-
-    return urls
+def request_headers():
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/152.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
 
-def safe_source_name(url):
-    try:
-        parsed = urlparse(url)
-        return parsed.netloc or url
-    except Exception:
-        return url
-
-
-def parse_entry_datetime(entry):
-    # feedparser 常見欄位：
-    # published_parsed / updated_parsed
-    for key in ("published_parsed", "updated_parsed"):
-        value = entry.get(key)
-        if value:
-            try:
-                return datetime(
-                    value.tm_year,
-                    value.tm_mon,
-                    value.tm_mday,
-                    value.tm_hour,
-                    value.tm_min,
-                    value.tm_sec,
-                    tzinfo=timezone.utc,
-                )
-            except Exception:
-                pass
-
-    # 備援：嘗試 ISO 字串
-    for key in ("published", "updated"):
-        value = entry.get(key)
-        if not value:
-            continue
-
-        try:
-            normalized = value.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(normalized)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
-        except Exception:
-            pass
-
-    return None
-
-
-def is_feed_fresh(feed):
-    if not feed.entries:
-        return False, "沒有任何項目"
-
-    latest = feed.entries[0]
-    latest_dt = parse_entry_datetime(latest)
-
-    # 有些第三方 RSS 不提供可靠日期。
-    # 這種情況不直接判死刑，避免誤殺正常 feed。
-    if latest_dt is None:
-        return True, "無法解析最新貼文日期，暫時接受"
-
-    age = datetime.now(timezone.utc) - latest_dt
-
-    if age > timedelta(days=MAX_FEED_AGE_DAYS):
-        return (
-            False,
-            f"最新項目距今約 {age.days} 天，超過 "
-            f"{MAX_FEED_AGE_DAYS} 天門檻"
-        )
-
-    return True, f"最新項目距今約 {age.days} 天"
-
-
-def fetch_feed_with_fallback(urls):
-    errors = []
-
-    for index, url in enumerate(urls, start=1):
-        source_name = safe_source_name(url)
-        print(f"[{index}/{len(urls)}] 嘗試 RSS：{source_name}")
-
-        try:
-            response = requests.get(
-                url,
-                timeout=REQUEST_TIMEOUT,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (compatible; "
-                        "WhereWindsMeetDiscordRSSBot/2.0)"
-                    )
-                },
-            )
-            response.raise_for_status()
-
-            feed = feedparser.parse(response.content)
-
-            if feed.bozo and not feed.entries:
-                raise RuntimeError(f"RSS 解析失敗：{feed.bozo_exception}")
-
-            if not feed.entries:
-                raise RuntimeError("RSS 回傳成功，但沒有任何項目。")
-
-            fresh, reason = is_feed_fresh(feed)
-
-            if not fresh:
-                raise RuntimeError(f"RSS 內容疑似過期：{reason}")
-
-            print(
-                f"✓ RSS 可用：{source_name}，"
-                f"讀取到 {len(feed.entries)} 個項目；{reason}"
-            )
-
-            return feed, url
-
-        except Exception as e:
-            msg = f"{source_name}: {type(e).__name__}: {e}"
-            errors.append(msg)
-            print(f"✗ RSS 失敗：{msg}")
-
-    raise RuntimeError(
-        "所有 RSS 來源都失敗。\n" + "\n".join(errors)
-    )
-
-
-def load_seen():
+def load_state():
     if not STATE_FILE.exists():
-        return []
+        return {"seen": []}
 
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return data.get("seen", [])
+        if not isinstance(data, dict):
+            return {"seen": []}
+        data.setdefault("seen", [])
+        return data
     except Exception:
-        return []
+        return {"seen": []}
 
 
-def save_seen(seen, active_rss_url=None):
-    state = {
-        "seen": seen[-MAX_SEEN:],
-    }
-
-    if active_rss_url:
-        state["last_working_rss"] = active_rss_url
-
+def save_state(seen, last_source="syndication-profile"):
     STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "seen": seen[-MAX_SEEN:],
+                "last_source": last_source,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
 
-def clean_html(value):
-    if not value:
+def clean_text(value):
+    if value is None:
         return ""
+
+    if not isinstance(value, str):
+        value = str(value)
 
     soup = BeautifulSoup(value, "html.parser")
     text = soup.get_text("\n")
@@ -210,32 +85,206 @@ def clean_html(value):
     return text.strip()
 
 
-def item_id(entry):
-    raw = (
-        entry.get("id")
-        or entry.get("guid")
-        or entry.get("link")
-        or (entry.get("title", "") + entry.get("published", ""))
+def walk(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from walk(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from walk(item)
+
+
+def tweet_url(handle, tweet_id):
+    return f"https://x.com/{handle}/status/{tweet_id}"
+
+
+def extract_tweets_from_next_data(payload):
+    """
+    X syndication timeline 的 JSON 結構可能會調整。
+    這裡不綁死單一路徑，而是遞迴找像 tweet 的物件。
+    """
+    found = {}
+
+    for obj in walk(payload):
+        if not isinstance(obj, dict):
+            continue
+
+        tweet_id = (
+            obj.get("id_str")
+            or obj.get("rest_id")
+            or obj.get("tweet_id")
+        )
+
+        # 避免把 user id / 其他 id 誤認成 tweet。
+        text = (
+            obj.get("full_text")
+            or obj.get("text")
+            or obj.get("tweet_text")
+        )
+
+        if tweet_id is None or text is None:
+            continue
+
+        tweet_id = str(tweet_id)
+
+        if not tweet_id.isdigit() or len(tweet_id) < 10:
+            continue
+
+        # 嘗試讀作者
+        author = X_HANDLE
+
+        user = obj.get("user")
+        if isinstance(user, dict):
+            author = (
+                user.get("screen_name")
+                or user.get("username")
+                or author
+            )
+
+        core = obj.get("core")
+        if isinstance(core, dict):
+            user_results = core.get("user_results")
+            if isinstance(user_results, dict):
+                result = user_results.get("result")
+                if isinstance(result, dict):
+                    legacy = result.get("legacy")
+                    if isinstance(legacy, dict):
+                        author = legacy.get("screen_name", author)
+
+        # legacy 結構
+        legacy = obj.get("legacy")
+        if isinstance(legacy, dict):
+            legacy_text = (
+                legacy.get("full_text")
+                or legacy.get("text")
+            )
+            if legacy_text:
+                text = legacy_text
+
+        text = clean_text(text)
+
+        if not text:
+            continue
+
+        # 只保留目標帳號自己的貼文
+        if author and author.lower() != X_HANDLE.lower():
+            continue
+
+        # 排除回覆
+        in_reply_to = (
+            obj.get("in_reply_to_status_id_str")
+            or obj.get("in_reply_to_screen_name")
+        )
+        if isinstance(legacy, dict):
+            in_reply_to = (
+                in_reply_to
+                or legacy.get("in_reply_to_status_id_str")
+                or legacy.get("in_reply_to_screen_name")
+            )
+        if in_reply_to:
+            continue
+
+        # 嘗試找日期
+        created_at = (
+            obj.get("created_at")
+            or (legacy.get("created_at") if isinstance(legacy, dict) else None)
+        )
+
+        # 嘗試找圖片
+        image_url = None
+
+        def inspect_media(container):
+            nonlocal image_url
+            if not isinstance(container, dict):
+                return
+            media = container.get("media")
+            if isinstance(media, list):
+                for item in media:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = (
+                        item.get("media_url_https")
+                        or item.get("media_url")
+                        or item.get("url")
+                    )
+                    if candidate and str(candidate).startswith("http"):
+                        image_url = str(candidate)
+                        return
+
+        entities = obj.get("entities")
+        if isinstance(entities, dict):
+            inspect_media(entities)
+
+        extended = obj.get("extended_entities")
+        if isinstance(extended, dict):
+            inspect_media(extended)
+
+        if isinstance(legacy, dict):
+            legacy_entities = legacy.get("entities")
+            if isinstance(legacy_entities, dict):
+                inspect_media(legacy_entities)
+            legacy_extended = legacy.get("extended_entities")
+            if isinstance(legacy_extended, dict):
+                inspect_media(legacy_extended)
+
+        found[tweet_id] = {
+            "id": tweet_id,
+            "text": text,
+            "author": author or X_HANDLE,
+            "created_at": created_at,
+            "url": tweet_url(X_HANDLE, tweet_id),
+            "image_url": image_url,
+        }
+
+    # Snowflake tweet id 大體上可按數值大小代表時間先後
+    tweets = sorted(
+        found.values(),
+        key=lambda x: int(x["id"]),
+        reverse=True,
     )
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    return tweets
 
 
-def entry_text(entry):
-    candidates = [
-        entry.get("summary"),
-        entry.get("description"),
-        entry.get("content", [{}])[0].get("value")
-        if entry.get("content")
-        else None,
-        entry.get("title"),
-    ]
+def fetch_profile_timeline():
+    print(f"抓取 X 公開嵌入時間線：@{X_HANDLE}")
 
-    for value in candidates:
-        text = clean_html(value)
-        if text:
-            return text
+    response = requests.get(
+        TIMELINE_URL,
+        headers=request_headers(),
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
 
-    return "(無文字內容)"
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    script = soup.find("script", id="__NEXT_DATA__")
+    if not script or not script.string:
+        raise RuntimeError(
+            "X syndication 頁面沒有找到 __NEXT_DATA__。"
+            "可能是 X 調整了嵌入頁結構。"
+        )
+
+    try:
+        payload = json.loads(script.string)
+    except Exception as e:
+        raise RuntimeError(f"無法解析 X syndication JSON：{e}")
+
+    tweets = extract_tweets_from_next_data(payload)
+
+    if not tweets:
+        raise RuntimeError(
+            "成功讀到 X syndication 頁，但沒有解析出任何正式貼文。"
+        )
+
+    print(f"✓ 解析到 {len(tweets)} 條候選貼文")
+    print(
+        f"✓ 最新貼文 ID：{tweets[0]['id']} "
+        f"{tweets[0]['url']}"
+    )
+
+    return tweets
 
 
 def translation_is_bad(result):
@@ -259,9 +308,6 @@ def translation_is_bad(result):
 
 
 def translate_zh_tw(text):
-    if not text or text == "(無文字內容)":
-        return text
-
     # 第一順位：Google
     try:
         result = GoogleTranslator(
@@ -280,8 +326,6 @@ def translate_zh_tw(text):
 
     # 第二順位：MyMemory
     try:
-        # MyMemory 對語言代碼通常用 zh-TW 也可，
-        # 若服務端不接受，會被 except 捕捉。
         result = MyMemoryTranslator(
             source="auto",
             target="zh-TW",
@@ -305,36 +349,13 @@ def truncate(text, limit):
     return text[: limit - 1] + "…"
 
 
-def find_image(entry):
-    if entry.get("media_content"):
-        for media in entry.media_content:
-            url = media.get("url")
-            if url:
-                return url
-
-    raw_html = ""
-
-    if entry.get("content"):
-        raw_html = entry.get("content", [{}])[0].get("value", "")
-
-    raw_html = raw_html or entry.get("summary", "")
-
-    soup = BeautifulSoup(raw_html, "html.parser")
-    img = soup.find("img")
-
-    if img and img.get("src"):
-        return img["src"]
-
-    return None
-
-
-def send_discord(entry, active_rss_url):
-    original = entry_text(entry)
+def send_discord(tweet):
+    original = tweet["text"]
     translated = translate_zh_tw(original)
-    link = entry.get("link", "")
 
     embed = {
         "title": "燕雲十六聲｜官方 X 更新",
+        "url": tweet["url"],
         "description": truncate(translated, 3500),
         "fields": [
             {
@@ -346,17 +367,13 @@ def send_discord(entry, active_rss_url):
         "footer": {
             "text": (
                 "來源：Where Winds Meet 官方 X"
-                f" · RSS：{safe_source_name(active_rss_url)}"
+                " · X syndication"
             )
         },
     }
 
-    if link:
-        embed["url"] = link
-
-    image_url = find_image(entry)
-    if image_url:
-        embed["image"] = {"url": image_url}
+    if tweet.get("image_url"):
+        embed["image"] = {"url": tweet["image_url"]}
 
     payload = {
         "username": WEBHOOK_NAME,
@@ -376,61 +393,45 @@ def send_discord(entry, active_rss_url):
 
 
 def main():
-    rss_urls = get_rss_urls()
-    feed, active_rss_url = fetch_feed_with_fallback(rss_urls)
+    tweets = fetch_profile_timeline()
 
-    entries = list(feed.entries)
-    seen = load_seen()
+    state = load_state()
+    seen = state.get("seen", [])
     seen_set = set(seen)
 
     if not seen:
-        current_ids = [item_id(e) for e in entries]
+        all_ids = [tweet["id"] for tweet in tweets]
 
         if SEND_LATEST_ON_FIRST_RUN:
-            latest = entries[0]
             print("第一次執行：發送目前最新貼文。")
-            send_discord(latest, active_rss_url)
+            send_discord(tweets[0])
         else:
-            print("第一次執行：只建立去重基準，不發送舊貼文。")
+            print("第一次執行：只建立基準，不發送舊貼文。")
 
-        save_seen(current_ids[-MAX_SEEN:], active_rss_url)
+        save_state(all_ids)
         return
 
-    new_entries = [
-        entry
-        for entry in entries
-        if item_id(entry) not in seen_set
+    new_tweets = [
+        tweet for tweet in tweets
+        if tweet["id"] not in seen_set
     ]
 
-    if not new_entries:
+    if not new_tweets:
         print("沒有新貼文。")
-        save_seen(seen, active_rss_url)
+        save_state(seen)
         return
 
-    sent_count = 0
+    # 舊 → 新 發送
+    for tweet in reversed(new_tweets):
+        print(f"發送：{tweet['url']}")
+        send_discord(tweet)
 
-    for entry in reversed(new_entries):
-        print(
-            "發送：",
-            entry.get(
-                "title",
-                entry.get("link", "(無標題)")
-            ),
-        )
+        if tweet["id"] not in seen:
+            seen.append(tweet["id"])
 
-        send_discord(entry, active_rss_url)
+        save_state(seen)
 
-        eid = item_id(entry)
-        if eid not in seen:
-            seen.append(eid)
-
-        save_seen(seen, active_rss_url)
-        sent_count += 1
-
-    print(
-        f"完成，共發送 {sent_count} 條；"
-        f"本次使用 RSS：{safe_source_name(active_rss_url)}"
-    )
+    print(f"完成，共發送 {len(new_tweets)} 條。")
 
 
 if __name__ == "__main__":

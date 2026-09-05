@@ -27,11 +27,9 @@ def make_session():
         allowed_methods=frozenset(["GET", "POST"]),
         raise_on_status=False,
     )
-
-    session = requests.Session()
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    session.mount("http://", HTTPAdapter(max_retries=retry))
-    return session
+    s = requests.Session()
+    s.mount("https://", HTTPAdapter(max_retries=retry))
+    return s
 
 
 SESSION = make_session()
@@ -39,18 +37,14 @@ SESSION = make_session()
 
 def validate_secrets():
     missing = []
-
     if not TWITTER_API_KEY:
         missing.append("TWITTER_API_KEY")
     if not DEEPL_API_KEY:
         missing.append("DEEPL_API_KEY")
     if not DISCORD_WEBHOOK_URL:
         missing.append("DISCORD_WEBHOOK_URL")
-
     if missing:
-        raise RuntimeError(
-            "缺少 GitHub Secrets: " + ", ".join(missing)
-        )
+        raise RuntimeError("缺少 GitHub Secrets: " + ", ".join(missing))
 
 
 def twitter_headers():
@@ -65,16 +59,12 @@ def load_state():
         return {"seen": [], "user_id": None}
 
     try:
-        data = json.loads(
-            STATE_FILE.read_text(encoding="utf-8")
-        )
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return {"seen": [], "user_id": None}
-
         data.setdefault("seen", [])
         data.setdefault("user_id", None)
         return data
-
     except Exception:
         return {"seen": [], "user_id": None}
 
@@ -95,99 +85,130 @@ def save_state(seen, user_id):
 
 
 def resolve_user_id():
-    print(f"[1/4] Resolving user: @{config.X_USERNAME}")
+    print(f"[1/5] Resolving user: @{config.X_USERNAME}")
 
-    response = SESSION.get(
+    r = SESSION.get(
         config.TWITTER_USER_INFO_URL,
         params={"userName": config.X_USERNAME},
         headers=twitter_headers(),
         timeout=config.REQUEST_TIMEOUT,
     )
 
-    print(
-        f"TwitterAPI.io user/info HTTP {response.status_code}"
-    )
+    print("user/info HTTP", r.status_code)
 
-    if not response.ok:
+    if not r.ok:
         raise RuntimeError(
-            f"user/info HTTP {response.status_code}: "
-            f"{response.text[:500]}"
+            f"user/info HTTP {r.status_code}: {r.text[:600]}"
         )
 
-    data = response.json()
-
-    if data.get("status") == "error":
-        raise RuntimeError(
-            "user/info API error: "
-            + str(data.get("msg") or data.get("message"))
-        )
-
+    data = r.json()
     user = data.get("data") or {}
 
     user_id = str(user.get("id") or "").strip()
-    username = str(user.get("userName") or "").strip()
 
     if not user_id:
         raise RuntimeError(
-            "user/info 成功，但回傳中沒有 user id。"
+            "user/info 回傳中沒有 user id。"
         )
 
     print(
-        f"Resolved user: @{username or config.X_USERNAME} -> {user_id}"
+        f"Resolved user: @{user.get('userName') or config.X_USERNAME}"
+        f" -> {user_id}"
     )
 
     pinned = user.get("pinnedTweetIds") or []
-    if pinned:
-        print(
-            f"Pinned tweet IDs from profile: {pinned}"
-        )
+    print("Pinned tweet IDs:", pinned)
 
     return user_id
 
 
-def fetch_timeline(user_id):
-    print(
-        f"[2/4] Fetching timeline by userId={user_id}"
-    )
-
-    response = SESSION.get(
-        config.TWITTER_TIMELINE_URL,
-        params={
-            "userId": user_id,
-            "includeReplies": str(
-                config.INCLUDE_REPLIES
-            ).lower(),
-        },
+def request_tweets(url, params, label):
+    r = SESSION.get(
+        url,
+        params=params,
         headers=twitter_headers(),
         timeout=config.REQUEST_TIMEOUT,
     )
 
+    print(f"{label} HTTP {r.status_code}")
+
+    if not r.ok:
+        print(f"{label} body preview:", r.text[:600])
+        return []
+
+    data = r.json()
+
+    # Diagnostic summary, without dumping the full tweet text
     print(
-        f"TwitterAPI.io tweet_timeline HTTP {response.status_code}"
+        f"{label} status={data.get('status')} "
+        f"message={data.get('message') or data.get('msg')}"
     )
 
-    if not response.ok:
-        raise RuntimeError(
-            f"tweet_timeline HTTP {response.status_code}: "
-            f"{response.text[:500]}"
+    print(
+        f"{label} top-level keys:",
+        sorted(list(data.keys()))
+    )
+
+    tweets = data.get("tweets")
+
+    if tweets is None:
+        print(
+            f"{label}: no 'tweets' key. JSON preview:",
+            json.dumps(data, ensure_ascii=False)[:800]
         )
+        return []
 
-    data = response.json()
-
-    if data.get("status") == "error":
-        raise RuntimeError(
-            "tweet_timeline API error: "
-            + str(data.get("message") or data.get("msg"))
+    if not isinstance(tweets, list):
+        print(
+            f"{label}: 'tweets' is not a list:",
+            type(tweets).__name__
         )
+        return []
 
-    tweets = data.get("tweets") or []
+    print(f"{label}: raw tweets returned = {len(tweets)}")
+    return tweets
 
-    print(f"Raw tweets returned: {len(tweets)}")
 
+def fetch_raw_tweets(user_id):
+    print("[2/5] Trying tweet_timeline")
+
+    tweets = request_tweets(
+        config.TWITTER_TIMELINE_URL,
+        {
+            "userId": user_id,
+            "includeReplies": str(config.INCLUDE_REPLIES).lower(),
+        },
+        "tweet_timeline",
+    )
+
+    if tweets:
+        print("Using source: tweet_timeline")
+        return tweets, "tweet_timeline"
+
+    print("tweet_timeline returned 0; falling back to last_tweets by userId")
+
+    tweets = request_tweets(
+        config.TWITTER_LAST_TWEETS_URL,
+        {
+            "userId": user_id,
+            "includeReplies": str(config.INCLUDE_REPLIES).lower(),
+            "cursor": "",
+        },
+        "last_tweets",
+    )
+
+    if tweets:
+        print("Using source: last_tweets")
+        return tweets, "last_tweets"
+
+    print("Both TwitterAPI.io endpoints returned 0 tweets.")
+    return [], None
+
+
+def normalize_tweets(tweets):
     replies_removed = 0
     retweets_removed = 0
     invalid_removed = 0
-
     cleaned = []
 
     for tweet in tweets:
@@ -207,16 +228,10 @@ def fetch_timeline(user_id):
             continue
 
         if config.EXCLUDE_RETWEETS:
-            tweet_type = str(
-                tweet.get("type") or ""
-            ).lower()
-
+            tweet_type = str(tweet.get("type") or "").lower()
             retweeted = tweet.get("retweeted_tweet")
 
-            if (
-                tweet_type == "retweet"
-                or retweeted not in (None, "", False, {})
-            ):
+            if tweet_type == "retweet" or retweeted not in (None, "", False, {}):
                 retweets_removed += 1
                 continue
 
@@ -225,11 +240,9 @@ def fetch_timeline(user_id):
             author.get("userName") or ""
         ).strip()
 
-        # timeline 理論上已是該帳號，但再做一次保護
         if (
             author_username
-            and author_username.lower()
-            != config.X_USERNAME.lower()
+            and author_username.lower() != config.X_USERNAME.lower()
         ):
             invalid_removed += 1
             continue
@@ -249,21 +262,22 @@ def fetch_timeline(user_id):
             }
         )
 
-    # Snowflake ID 新 -> 舊
     cleaned.sort(
         key=lambda x: int(x["id"]),
         reverse=True,
     )
 
-    print(f"Replies removed: {replies_removed}")
-    print(f"Retweets removed: {retweets_removed}")
-    print(f"Invalid removed: {invalid_removed}")
-    print(f"Usable tweets: {len(cleaned)}")
+    print("[3/5] Normalization")
+    print("Replies removed:", replies_removed)
+    print("Retweets removed:", retweets_removed)
+    print("Invalid removed:", invalid_removed)
+    print("Usable tweets:", len(cleaned))
 
     if cleaned:
         print(
-            f"Latest usable tweet: {cleaned[0]['id']} "
-            f"{cleaned[0]['url']}"
+            "Latest usable tweet:",
+            cleaned[0]["id"],
+            cleaned[0]["url"],
         )
         print(
             "Latest text preview:",
@@ -274,14 +288,13 @@ def fetch_timeline(user_id):
 
 
 def translate_with_deepl(text):
-    print("[3/4] Translating with DeepL")
+    print("[4/5] DeepL translation")
 
-    response = SESSION.post(
+    r = SESSION.post(
         config.DEEPL_API_URL,
         headers={
             "Authorization": f"DeepL-Auth-Key {DEEPL_API_KEY}",
             "Content-Type": "application/json",
-            "User-Agent": "WWM-X-Discord-GitHub/2.0",
         },
         json={
             "text": [text],
@@ -291,64 +304,43 @@ def translate_with_deepl(text):
         timeout=config.REQUEST_TIMEOUT,
     )
 
-    print(f"DeepL HTTP {response.status_code}")
+    print("DeepL HTTP", r.status_code)
 
-    if not response.ok:
+    if not r.ok:
         raise RuntimeError(
-            f"DeepL HTTP {response.status_code}: "
-            f"{response.text[:500]}"
+            f"DeepL HTTP {r.status_code}: {r.text[:500]}"
         )
 
-    data = response.json()
-
+    data = r.json()
     translations = data.get("translations") or []
 
     if not translations:
-        raise RuntimeError(
-            "DeepL 沒有返回 translation。"
-        )
+        raise RuntimeError("DeepL 沒有返回 translation。")
 
-    translated = str(
-        translations[0].get("text") or ""
-    ).strip()
+    result = str(translations[0].get("text") or "").strip()
 
-    if not translated:
-        raise RuntimeError(
-            "DeepL 返回空翻譯。"
-        )
+    if not result:
+        raise RuntimeError("DeepL 返回空翻譯。")
 
-    return translated
+    return result
 
 
 def extract_image(tweet):
     raw = tweet.get("raw") or {}
-
     candidates = []
 
-    # 常見直接 media 欄位
-    for key in (
-        "media",
-        "medias",
-        "mediaList",
-    ):
+    for key in ("media", "medias", "mediaList"):
         value = raw.get(key)
         if isinstance(value, list):
             candidates.extend(value)
 
-    # entities / extended entities
-    for key in (
-        "entities",
-        "extended_entities",
-        "extendedEntities",
-    ):
-        container = raw.get(key)
-
-        if isinstance(container, dict):
-            media = container.get("media")
+    for key in ("entities", "extended_entities", "extendedEntities"):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            media = value.get("media")
             if isinstance(media, list):
                 candidates.extend(media)
 
-    # TwitterAPI.io 某些版本可能把媒體放在 article / extendedEntities 類欄位
     for item in candidates:
         if not isinstance(item, dict):
             continue
@@ -360,11 +352,7 @@ def extract_image(tweet):
             "preview_image_url",
         ):
             value = item.get(key)
-
-            if (
-                isinstance(value, str)
-                and value.startswith("http")
-            ):
+            if isinstance(value, str) and value.startswith("http"):
                 return value
 
     return None
@@ -372,17 +360,11 @@ def extract_image(tweet):
 
 def send_to_discord(tweet):
     try:
-        translated = translate_with_deepl(
-            tweet["text"]
-        )
-        print("DeepL translation: OK")
-
+        translated = translate_with_deepl(tweet["text"])
+        print("DeepL: OK")
     except Exception as e:
-        print("DeepL translation failed:", e)
-
-        translated = (
-            "⚠️ 中文翻譯暫時失敗，請查看下方原文。"
-        )
+        print("DeepL failed:", e)
+        translated = "⚠️ 中文翻譯暫時失敗，請查看下方原文。"
 
     embed = {
         "title": config.DISCORD_TITLE,
@@ -395,123 +377,83 @@ def send_to_discord(tweet):
                 "inline": False,
             }
         ],
-        "footer": {
-            "text": config.DISCORD_FOOTER
-        },
+        "footer": {"text": config.DISCORD_FOOTER},
     }
-
-    created_at = tweet.get("createdAt")
-    if created_at:
-        raw_ts = str(created_at)
-
-        # ISO 日期才送給 Discord timestamp
-        if "T" in raw_ts:
-            embed["timestamp"] = raw_ts
 
     image = extract_image(tweet)
     if image:
         embed["image"] = {"url": image}
 
-    print("[4/4] Sending Discord")
+    print("[5/5] Sending Discord")
 
-    response = SESSION.post(
+    r = SESSION.post(
         DISCORD_WEBHOOK_URL,
         json={
             "username": config.DISCORD_USERNAME,
             "embeds": [embed],
-            "allowed_mentions": {
-                "parse": []
-            },
+            "allowed_mentions": {"parse": []},
         },
         timeout=config.REQUEST_TIMEOUT,
     )
 
-    print(f"Discord HTTP {response.status_code}")
+    print("Discord HTTP", r.status_code)
 
-    if not response.ok:
+    if not r.ok:
         raise RuntimeError(
-            f"Discord HTTP {response.status_code}: "
-            f"{response.text[:500]}"
+            f"Discord HTTP {r.status_code}: {r.text[:500]}"
         )
 
-    print(
-        f"Discord sent tweet {tweet['id']}"
-    )
+    print("Discord sent:", tweet["id"])
 
 
 def main():
     validate_secrets()
-
     state = load_state()
 
-    # 每次重新解析 user id。
-    # 成本很低，也避免帳號狀態改變時 state 卡住。
     user_id = resolve_user_id()
 
-    tweets = fetch_timeline(user_id)
+    raw_tweets, source = fetch_raw_tweets(user_id)
 
-    if not tweets:
+    if not raw_tweets:
+        print("沒有取得任何貼文。")
         print(
-            "沒有取得任何可用貼文。"
+            "This strongly suggests TwitterAPI.io itself returned an empty "
+            "timeline for this account, not that our filter removed them."
         )
         return
 
-    seen = [
-        str(x)
-        for x in state.get("seen", [])
-    ]
+    tweets = normalize_tweets(raw_tweets)
+
+    if not tweets:
+        print("API 有返回貼文，但全部被本地過濾。")
+        return
+
+    seen = [str(x) for x in state.get("seen", [])]
     seen_set = set(seen)
 
-    # 第一次執行
     if not seen:
         if config.SEND_LATEST_ON_FIRST_RUN:
             latest = tweets[0]
-
-            print(
-                "First run: sending current latest tweet"
-            )
-
+            print("First run: sending latest tweet")
             send_to_discord(latest)
 
-        # 首次把目前 timeline 的 ID 全記為已見
-        initial_ids = [
-            tweet["id"]
-            for tweet in tweets
-        ]
-
-        save_state(
-            initial_ids,
-            user_id,
-        )
-
+        initial_ids = [t["id"] for t in tweets]
+        save_state(initial_ids, user_id)
         print(
-            f"Initial state saved with "
-            f"{len(initial_ids)} tweet IDs."
+            f"Initial state saved ({len(initial_ids)} ids), source={source}"
         )
         return
 
-    new_tweets = [
-        tweet
-        for tweet in tweets
-        if tweet["id"] not in seen_set
-    ]
+    new_tweets = [t for t in tweets if t["id"] not in seen_set]
 
     if not new_tweets:
         print("沒有新貼文。")
-        save_state(seen, user_id)
         return
 
-    # 防止長時間停機刷屏
-    new_tweets = new_tweets[
-        :config.MAX_POSTS_PER_RUN
-    ]
+    new_tweets = new_tweets[:config.MAX_POSTS_PER_RUN]
+    new_tweets.sort(key=lambda x: int(x["id"]))
 
-    # 舊 -> 新
-    new_tweets.sort(
-        key=lambda x: int(x["id"])
-    )
-
-    sent = 0
+    count = 0
 
     for tweet in new_tweets:
         send_to_discord(tweet)
@@ -520,13 +462,10 @@ def main():
             seen.append(tweet["id"])
             seen_set.add(tweet["id"])
 
-        # 每成功一條就存，避免重發
         save_state(seen, user_id)
-        sent += 1
+        count += 1
 
-    print(
-        f"完成，共發送 {sent} 條新貼文。"
-    )
+    print(f"完成，共發送 {count} 條。")
 
 
 if __name__ == "__main__":

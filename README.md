@@ -1,16 +1,20 @@
-# WWM GitHub TwitterAPI.io fallback version
+# WWM X → DeepL → Discord
 
-This version tries:
+Fix:
+TwitterAPI.io returns tweets under:
 
-1. `tweet_timeline?userId=...`
-2. If empty: `last_tweets?userId=...`
+`data.tweets`
 
-It also logs top-level API status/message/keys so an empty response can be diagnosed accurately.
+not necessarily top-level:
+
+`tweets`
+
+This version supports both.
+
+Schedule:
+every 3 hours.
 
 Secrets:
 - TWITTER_API_KEY
 - DEEPL_API_KEY
 - DISCORD_WEBHOOK_URL
-
-Schedule:
-- every 3 hours

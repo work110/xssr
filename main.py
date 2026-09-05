@@ -43,6 +43,7 @@ def validate_secrets():
         missing.append("DEEPL_API_KEY")
     if not DISCORD_WEBHOOK_URL:
         missing.append("DISCORD_WEBHOOK_URL")
+
     if missing:
         raise RuntimeError("缺少 GitHub Secrets: " + ", ".join(missing))
 
@@ -59,12 +60,16 @@ def load_state():
         return {"seen": [], "user_id": None}
 
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(
+            STATE_FILE.read_text(encoding="utf-8")
+        )
         if not isinstance(data, dict):
             return {"seen": [], "user_id": None}
+
         data.setdefault("seen", [])
         data.setdefault("user_id", None)
         return data
+
     except Exception:
         return {"seen": [], "user_id": None}
 
@@ -122,6 +127,47 @@ def resolve_user_id():
     return user_id
 
 
+def extract_tweets_from_response(data, label):
+    """
+    TwitterAPI.io 目前常見格式：
+    {
+      "status": "success",
+      "data": {
+        "tweets": [...]
+      }
+    }
+
+    為兼容不同版本，也保留頂層 tweets fallback。
+    """
+
+    # 第一順位：data.tweets
+    nested_data = data.get("data")
+
+    if isinstance(nested_data, dict):
+        tweets = nested_data.get("tweets")
+        if isinstance(tweets, list):
+            print(
+                f"{label}: found data.tweets = {len(tweets)}"
+            )
+            return tweets
+
+    # 第二順位：頂層 tweets
+    tweets = data.get("tweets")
+
+    if isinstance(tweets, list):
+        print(
+            f"{label}: found top-level tweets = {len(tweets)}"
+        )
+        return tweets
+
+    print(
+        f"{label}: cannot find tweets array. "
+        f"Top-level keys={sorted(list(data.keys()))}"
+    )
+
+    return []
+
+
 def request_tweets(url, params, label):
     r = SESSION.get(
         url,
@@ -133,39 +179,26 @@ def request_tweets(url, params, label):
     print(f"{label} HTTP {r.status_code}")
 
     if not r.ok:
-        print(f"{label} body preview:", r.text[:600])
-        return []
+        raise RuntimeError(
+            f"{label} HTTP {r.status_code}: {r.text[:600]}"
+        )
 
     data = r.json()
 
-    # Diagnostic summary, without dumping the full tweet text
     print(
         f"{label} status={data.get('status')} "
         f"message={data.get('message') or data.get('msg')}"
     )
 
-    print(
-        f"{label} top-level keys:",
-        sorted(list(data.keys()))
+    tweets = extract_tweets_from_response(
+        data,
+        label,
     )
 
-    tweets = data.get("tweets")
+    print(
+        f"{label}: raw tweets returned = {len(tweets)}"
+    )
 
-    if tweets is None:
-        print(
-            f"{label}: no 'tweets' key. JSON preview:",
-            json.dumps(data, ensure_ascii=False)[:800]
-        )
-        return []
-
-    if not isinstance(tweets, list):
-        print(
-            f"{label}: 'tweets' is not a list:",
-            type(tweets).__name__
-        )
-        return []
-
-    print(f"{label}: raw tweets returned = {len(tweets)}")
     return tweets
 
 
@@ -176,7 +209,9 @@ def fetch_raw_tweets(user_id):
         config.TWITTER_TIMELINE_URL,
         {
             "userId": user_id,
-            "includeReplies": str(config.INCLUDE_REPLIES).lower(),
+            "includeReplies": str(
+                config.INCLUDE_REPLIES
+            ).lower(),
         },
         "tweet_timeline",
     )
@@ -185,14 +220,18 @@ def fetch_raw_tweets(user_id):
         print("Using source: tweet_timeline")
         return tweets, "tweet_timeline"
 
-    print("tweet_timeline returned 0; falling back to last_tweets by userId")
+    print(
+        "tweet_timeline returned 0; "
+        "falling back to last_tweets"
+    )
 
     tweets = request_tweets(
         config.TWITTER_LAST_TWEETS_URL,
         {
             "userId": user_id,
-            "includeReplies": str(config.INCLUDE_REPLIES).lower(),
-            "cursor": "",
+            "includeReplies": str(
+                config.INCLUDE_REPLIES
+            ).lower(),
         },
         "last_tweets",
     )
@@ -201,7 +240,7 @@ def fetch_raw_tweets(user_id):
         print("Using source: last_tweets")
         return tweets, "last_tweets"
 
-    print("Both TwitterAPI.io endpoints returned 0 tweets.")
+    print("Both endpoints returned 0 tweets.")
     return [], None
 
 
@@ -216,8 +255,13 @@ def normalize_tweets(tweets):
             invalid_removed += 1
             continue
 
-        tweet_id = str(tweet.get("id") or "").strip()
-        text = str(tweet.get("text") or "").strip()
+        tweet_id = str(
+            tweet.get("id") or ""
+        ).strip()
+
+        text = str(
+            tweet.get("text") or ""
+        ).strip()
 
         if not tweet_id or not text:
             invalid_removed += 1
@@ -228,21 +272,34 @@ def normalize_tweets(tweets):
             continue
 
         if config.EXCLUDE_RETWEETS:
-            tweet_type = str(tweet.get("type") or "").lower()
-            retweeted = tweet.get("retweeted_tweet")
+            tweet_type = str(
+                tweet.get("type") or ""
+            ).lower()
 
-            if tweet_type == "retweet" or retweeted not in (None, "", False, {}):
+            retweeted = (
+                tweet.get("retweeted_tweet")
+                or tweet.get("retweetedTweet")
+            )
+
+            if (
+                tweet_type == "retweet"
+                or retweeted not in (
+                    None, "", False, {}
+                )
+            ):
                 retweets_removed += 1
                 continue
 
         author = tweet.get("author") or {}
+
         author_username = str(
             author.get("userName") or ""
         ).strip()
 
         if (
             author_username
-            and author_username.lower() != config.X_USERNAME.lower()
+            and author_username.lower()
+            != config.X_USERNAME.lower()
         ):
             invalid_removed += 1
             continue
@@ -279,9 +336,11 @@ def normalize_tweets(tweets):
             cleaned[0]["id"],
             cleaned[0]["url"],
         )
+
         print(
             "Latest text preview:",
-            cleaned[0]["text"][:180].replace("\n", " "),
+            cleaned[0]["text"][:180]
+            .replace("\n", " "),
         )
 
     return cleaned
@@ -293,12 +352,15 @@ def translate_with_deepl(text):
     r = SESSION.post(
         config.DEEPL_API_URL,
         headers={
-            "Authorization": f"DeepL-Auth-Key {DEEPL_API_KEY}",
-            "Content-Type": "application/json",
+            "Authorization":
+                f"DeepL-Auth-Key {DEEPL_API_KEY}",
+            "Content-Type":
+                "application/json",
         },
         json={
             "text": [text],
-            "target_lang": config.DEEPL_TARGET_LANG,
+            "target_lang":
+                config.DEEPL_TARGET_LANG,
             "preserve_formatting": True,
         },
         timeout=config.REQUEST_TIMEOUT,
@@ -308,36 +370,61 @@ def translate_with_deepl(text):
 
     if not r.ok:
         raise RuntimeError(
-            f"DeepL HTTP {r.status_code}: {r.text[:500]}"
+            f"DeepL HTTP {r.status_code}: "
+            f"{r.text[:500]}"
         )
 
     data = r.json()
-    translations = data.get("translations") or []
+
+    translations = (
+        data.get("translations")
+        or []
+    )
 
     if not translations:
-        raise RuntimeError("DeepL 沒有返回 translation。")
+        raise RuntimeError(
+            "DeepL 沒有返回 translation。"
+        )
 
-    result = str(translations[0].get("text") or "").strip()
+    result = str(
+        translations[0].get("text")
+        or ""
+    ).strip()
 
     if not result:
-        raise RuntimeError("DeepL 返回空翻譯。")
+        raise RuntimeError(
+            "DeepL 返回空翻譯。"
+        )
 
     return result
 
 
 def extract_image(tweet):
     raw = tweet.get("raw") or {}
+
+    # TwitterAPI.io 常見 media 欄位
     candidates = []
 
-    for key in ("media", "medias", "mediaList"):
+    for key in (
+        "media",
+        "medias",
+        "mediaList",
+    ):
         value = raw.get(key)
+
         if isinstance(value, list):
             candidates.extend(value)
 
-    for key in ("entities", "extended_entities", "extendedEntities"):
-        value = raw.get(key)
-        if isinstance(value, dict):
-            media = value.get("media")
+    for key in (
+        "entities",
+        "extended_entities",
+        "extendedEntities",
+    ):
+        container = raw.get(key)
+
+        if isinstance(container, dict):
+            media = container.get("media")
+
             if isinstance(media, list):
                 candidates.extend(media)
 
@@ -352,7 +439,11 @@ def extract_image(tweet):
             "preview_image_url",
         ):
             value = item.get(key)
-            if isinstance(value, str) and value.startswith("http"):
+
+            if (
+                isinstance(value, str)
+                and value.startswith("http")
+            ):
                 return value
 
     return None
@@ -360,112 +451,215 @@ def extract_image(tweet):
 
 def send_to_discord(tweet):
     try:
-        translated = translate_with_deepl(tweet["text"])
+        translated = translate_with_deepl(
+            tweet["text"]
+        )
+
         print("DeepL: OK")
+
     except Exception as e:
-        print("DeepL failed:", e)
-        translated = "⚠️ 中文翻譯暫時失敗，請查看下方原文。"
+        print(
+            "DeepL failed:",
+            e
+        )
+
+        translated = (
+            "⚠️ 中文翻譯暫時失敗，"
+            "請查看下方原文。"
+        )
 
     embed = {
-        "title": config.DISCORD_TITLE,
-        "url": tweet["url"],
-        "description": translated[:4000],
+        "title":
+            config.DISCORD_TITLE,
+
+        "url":
+            tweet["url"],
+
+        "description":
+            translated[:4000],
+
         "fields": [
             {
                 "name": "原文",
-                "value": tweet["text"][:1000],
+                "value":
+                    tweet["text"][:1000],
                 "inline": False,
             }
         ],
-        "footer": {"text": config.DISCORD_FOOTER},
+
+        "footer": {
+            "text":
+                config.DISCORD_FOOTER
+        },
     }
 
     image = extract_image(tweet)
+
     if image:
-        embed["image"] = {"url": image}
+        embed["image"] = {
+            "url": image
+        }
 
     print("[5/5] Sending Discord")
 
     r = SESSION.post(
         DISCORD_WEBHOOK_URL,
         json={
-            "username": config.DISCORD_USERNAME,
-            "embeds": [embed],
-            "allowed_mentions": {"parse": []},
+            "username":
+                config.DISCORD_USERNAME,
+
+            "embeds":
+                [embed],
+
+            "allowed_mentions": {
+                "parse": []
+            },
         },
         timeout=config.REQUEST_TIMEOUT,
     )
 
-    print("Discord HTTP", r.status_code)
+    print(
+        "Discord HTTP",
+        r.status_code
+    )
 
     if not r.ok:
         raise RuntimeError(
-            f"Discord HTTP {r.status_code}: {r.text[:500]}"
+            f"Discord HTTP {r.status_code}: "
+            f"{r.text[:500]}"
         )
 
-    print("Discord sent:", tweet["id"])
+    print(
+        "Discord sent:",
+        tweet["id"]
+    )
 
 
 def main():
     validate_secrets()
+
     state = load_state()
 
     user_id = resolve_user_id()
 
-    raw_tweets, source = fetch_raw_tweets(user_id)
+    raw_tweets, source = (
+        fetch_raw_tweets(user_id)
+    )
 
     if not raw_tweets:
-        print("沒有取得任何貼文。")
         print(
-            "This strongly suggests TwitterAPI.io itself returned an empty "
-            "timeline for this account, not that our filter removed them."
+            "沒有取得任何貼文。"
         )
         return
 
-    tweets = normalize_tweets(raw_tweets)
+    tweets = normalize_tweets(
+        raw_tweets
+    )
 
     if not tweets:
-        print("API 有返回貼文，但全部被本地過濾。")
-        return
-
-    seen = [str(x) for x in state.get("seen", [])]
-    seen_set = set(seen)
-
-    if not seen:
-        if config.SEND_LATEST_ON_FIRST_RUN:
-            latest = tweets[0]
-            print("First run: sending latest tweet")
-            send_to_discord(latest)
-
-        initial_ids = [t["id"] for t in tweets]
-        save_state(initial_ids, user_id)
         print(
-            f"Initial state saved ({len(initial_ids)} ids), source={source}"
+            "API 有返回貼文，"
+            "但全部被本地過濾。"
         )
         return
 
-    new_tweets = [t for t in tweets if t["id"] not in seen_set]
+    seen = [
+        str(x)
+        for x in state.get(
+            "seen",
+            []
+        )
+    ]
+
+    seen_set = set(seen)
+
+    # 第一次執行
+    if not seen:
+        if (
+            config.SEND_LATEST_ON_FIRST_RUN
+        ):
+            latest = tweets[0]
+
+            print(
+                "First run: "
+                "sending latest tweet"
+            )
+
+            send_to_discord(
+                latest
+            )
+
+        initial_ids = [
+            t["id"]
+            for t in tweets
+        ]
+
+        save_state(
+            initial_ids,
+            user_id,
+        )
+
+        print(
+            f"Initial state saved "
+            f"({len(initial_ids)} ids), "
+            f"source={source}"
+        )
+
+        return
+
+    new_tweets = [
+        t
+        for t in tweets
+        if t["id"]
+        not in seen_set
+    ]
 
     if not new_tweets:
         print("沒有新貼文。")
         return
 
-    new_tweets = new_tweets[:config.MAX_POSTS_PER_RUN]
-    new_tweets.sort(key=lambda x: int(x["id"]))
+    new_tweets = (
+        new_tweets[
+            :config.MAX_POSTS_PER_RUN
+        ]
+    )
+
+    # 舊 → 新
+    new_tweets.sort(
+        key=lambda x:
+            int(x["id"])
+    )
 
     count = 0
 
     for tweet in new_tweets:
-        send_to_discord(tweet)
+        send_to_discord(
+            tweet
+        )
 
-        if tweet["id"] not in seen_set:
-            seen.append(tweet["id"])
-            seen_set.add(tweet["id"])
+        if (
+            tweet["id"]
+            not in seen_set
+        ):
+            seen.append(
+                tweet["id"]
+            )
 
-        save_state(seen, user_id)
+            seen_set.add(
+                tweet["id"]
+            )
+
+        save_state(
+            seen,
+            user_id,
+        )
+
         count += 1
 
-    print(f"完成，共發送 {count} 條。")
+    print(
+        f"完成，共發送 "
+        f"{count} 條。"
+    )
 
 
 if __name__ == "__main__":

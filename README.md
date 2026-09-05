@@ -1,99 +1,76 @@
-# X → Discord 完整容錯版 v3
+# Where Winds Meet X → Discord (Cloudflare Browser Run)
 
-這版專門處理你遇到的：
+This is a full Wrangler/npm project for deployment from GitHub to Cloudflare Workers.
 
-429 Too Many Requests
+## Files
 
----
+- `package.json`
+- `wrangler.jsonc`
+- `src/index.js`
 
-## 主要改動
+## Required Cloudflare resources
 
-### 1. 429 自動重試
+### Browser binding
 
-收到 429 時：
+Binding name:
 
-- 優先讀 Retry-After
-- 沒有 Retry-After 就使用指數退避
-- 每次加少量隨機等待
-- 最多重試 4 次
+`BROWSER`
 
-### 2. 多公開入口 fallback
+### Workers KV
 
-會依序嘗試：
+Binding name:
 
-- /srv/timeline-profile/screen-name/...
-- /timeline/profile?screen_name=...
+`STATE`
 
-任一成功就繼續。
+Namespace:
 
-### 3. GitHub Actions 執行前隨機延遲
+your existing `where-winds-meet-state`
 
-每次先隨機等待：
+In `wrangler.jsonc`, replace:
 
-10～50 秒
+`REPLACE_WITH_YOUR_KV_NAMESPACE_ID`
 
-避免所有 GitHub Actions 在固定分鐘一起撞 X。
+with the real namespace ID shown by Cloudflare Workers KV.
 
-### 4. 降低排程頻率
+### Secret
 
-原本：
+Create this in the Cloudflare Worker dashboard:
 
-每 30 分鐘
+`DISCORD_WEBHOOK_URL`
 
-現在：
+Do NOT put the Discord webhook URL into GitHub or `wrangler.jsonc`.
 
-每小時 07 分
-每小時 52 分
+## Cron
 
-約每 45 分鐘。
+Current schedule:
 
-這是為了降低 429 機率。
+`7,37 * * * *`
 
-如果後面證明很穩，可以再改回 30 分鐘。
+Runs about every 30 minutes.
 
-### 5. state.json
+## Deploy with GitHub
 
-只在成功解析後才更新。
+1. Create a new GitHub repository.
+2. Upload all files from this project.
+3. In Cloudflare Workers & Pages, connect the repository.
+4. Build command:
+   `npm run deploy`
+5. Cloudflare will install dependencies, including `@cloudflare/puppeteer`.
+6. Keep/add your `DISCORD_WEBHOOK_URL` secret.
+7. Deploy.
 
-抓 X 失敗不會破壞之前的去重資料。
+## Manual test
 
----
+Visit:
 
-## GitHub Secret
+`https://where-winds-meet-x.<your-subdomain>.workers.dev/run`
 
-只需要：
+Expected success response:
 
-DISCORD_WEBHOOK_URL
+```json
+{"ok":true,"result":"..."}
+```
 
----
+## Important
 
-## 要覆蓋的檔案
-
-main.py
-requirements.txt
-.github/workflows/x-to-discord.yml
-README.md
-
----
-
-## 測試
-
-Push 後：
-
-Actions
-→ X to Discord
-→ Run workflow
-
-正常情況：
-
-請求 ...
-✓ 解析到 X 條正式貼文
-✓ 本次判定最新：...
-沒有新貼文。
-
-如果遇到 429：
-
-⚠️ 收到 429 Too Many Requests
-等待 xx 秒後重試
-
-程式會自己處理。
+The first deploy requires the correct KV namespace ID in `wrangler.jsonc`.

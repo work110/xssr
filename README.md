@@ -1,76 +1,70 @@
-# Where Winds Meet X → Discord (Cloudflare Browser Run)
+# Where Winds Meet X → DeepL → Discord
 
-This is a full Wrangler/npm project for deployment from GitHub to Cloudflare Workers.
+GitHub Actions 每 3 小時：
 
-## Files
+1. TwitterAPI.io 讀取 `@WhereWindsMeet_`
+2. 排除 Reply / Retweet
+3. `state.json` 去重
+4. DeepL 翻譯成繁體中文
+5. Discord Webhook 發送
 
-- `package.json`
-- `wrangler.jsonc`
-- `src/index.js`
+## 需要的 GitHub Secrets
 
-## Required Cloudflare resources
+Repository：
 
-### Browser binding
+Settings → Secrets and variables → Actions → New repository secret
 
-Binding name:
+建立：
 
-`BROWSER`
+- `TWITTER_API_KEY`
+- `DEEPL_API_KEY`
+- `DISCORD_WEBHOOK_URL`
 
-### Workers KV
+不要把真正 API Key 寫進 `config.py` 或提交到 GitHub。
 
-Binding name:
+## 所有常用設定都在 config.py
 
-`STATE`
+例如：
 
-Namespace:
+- X 帳號
+- TwitterAPI.io endpoint
+- DeepL endpoint
+- DeepL 翻譯語言
+- Discord 顯示名稱
+- 第一次是否發最新貼文
+- 每次最多補發幾條
 
-your existing `where-winds-meet-state`
+### DeepL Free
 
-In `wrangler.jsonc`, replace:
+預設：
 
-`REPLACE_WITH_YOUR_KV_NAMESPACE_ID`
+`https://api-free.deepl.com/v2/translate`
 
-with the real namespace ID shown by Cloudflare Workers KV.
+如果你是 DeepL API Pro，改成：
 
-### Secret
+`https://api.deepl.com/v2/translate`
 
-Create this in the Cloudflare Worker dashboard:
+## 排程
 
-`DISCORD_WEBHOOK_URL`
+`.github/workflows/x-to-discord.yml`
 
-Do NOT put the Discord webhook URL into GitHub or `wrangler.jsonc`.
+目前：
 
-## Cron
+`7 */3 * * *`
 
-Current schedule:
+表示 UTC 每 3 小時第 07 分執行一次。
 
-`7,37 * * * *`
+## 第一次測試
 
-Runs about every 30 minutes.
+GitHub → Actions → WWM X to Discord → Run workflow
 
-## Deploy with GitHub
+第一次成功時會：
 
-1. Create a new GitHub repository.
-2. Upload all files from this project.
-3. In Cloudflare Workers & Pages, connect the repository.
-4. Build command:
-   `npm run deploy`
-5. Cloudflare will install dependencies, including `@cloudflare/puppeteer`.
-6. Keep/add your `DISCORD_WEBHOOK_URL` secret.
-7. Deploy.
+- 發目前最新的一條到 Discord
+- 把目前 API 返回的貼文 ID 寫進 `state.json`
 
-## Manual test
+因此第二次不會重複刷歷史內容。
 
-Visit:
+## 安全
 
-`https://where-winds-meet-x.<your-subdomain>.workers.dev/run`
-
-Expected success response:
-
-```json
-{"ok":true,"result":"..."}
-```
-
-## Important
-
-The first deploy requires the correct KV namespace ID in `wrangler.jsonc`.
+API Key 和 Discord Webhook 一律使用 GitHub Secrets。

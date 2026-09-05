@@ -1,124 +1,32 @@
-# X → 中文翻譯 → Discord Webhook（無 RSS 版）
+# X → Discord（無 RSS v2：修正置頂貼文）
 
-這一版完全移除 RSSHub。
+這版專門修正「把置頂貼文當成最新貼文」的問題。
 
-流程：
+核心改動：
 
-X 公開嵌入時間線
-↓
-GitHub Actions
-↓
-解析最新貼文
-↓
-state.json 去重
-↓
-Google / MyMemory 翻譯
-↓
-Discord Webhook
+1. 不再遞迴掃描整個 __NEXT_DATA__
+2. 直接讀：
+   props.pageProps.timeline.entries
+3. 每個 entry 只取：
+   content.tweet
+4. 使用 X 自己提供的：
+   props.pageProps.latest_tweet_id
+   驗證真正最新貼文
+5. 置頂貼文不會再覆蓋真正最新貼文
+6. Quote Tweet 會保留官方帳號的頂層評論文字
+7. 30 分鐘內如果連發多條，會全部依時間順序推送
 
-目標帳號：
-
-@WhereWindsMeet_
-
----
-
-## GitHub Secret
-
-現在只需要：
+GitHub Secret 仍只需要：
 
 DISCORD_WEBHOOK_URL
 
-舊的 RSS_URL / RSS_URLS 可以刪掉，不再使用。
+舊 RSS_URL / RSS_URLS 不使用。
 
----
+## 關於 state.json
 
-## 抓取方式
+如果你想立刻重新測試「第一次執行」：
 
-程式會讀取 X/Twitter 的公開 profile syndication 頁：
+可以刪除 repository 根目錄的 state.json，
+然後再手動 Run workflow。
 
-https://syndication.twitter.com/srv/timeline-profile/screen-name/WhereWindsMeet_
-
-從頁面中的 __NEXT_DATA__ JSON 抽取貼文。
-
-這不需要：
-
-- X API key
-- OAuth
-- X 登入
-- RSSHub
-
-注意：
-
-這屬於 X 的公開嵌入/展示端點，不是正式的開發者 timeline API。
-如果 X 未來修改頁面結構，程式仍可能需要更新。
-
----
-
-## 過濾
-
-目前：
-
-- 只保留 @WhereWindsMeet_ 自己的貼文
-- 排除 Reply
-- 不依賴 RSS 的 retweet/filter 路由
-
----
-
-## 翻譯
-
-第一順位：
-
-GoogleTranslator
-
-失敗時自動：
-
-MyMemoryTranslator
-
-如果兩個都失敗：
-
-Discord 會顯示：
-
-⚠️ 中文翻譯暫時失敗，請查看下方原文。
-
-不會再把 Error 500 HTML 當成翻譯內容。
-
----
-
-## 執行時間
-
-每小時：
-
-07 分
-37 分
-
-約每 30 分鐘一次。
-
----
-
-## 第一次測試
-
-GitHub：
-
-Actions
-→ X to Discord
-→ Run workflow
-
-目前：
-
-SEND_LATEST_ON_FIRST_RUN=true
-
-第一次成功抓取時會把目前最新一條發到 Discord，
-方便確認整條鏈路。
-
-之後 state.json 會防止重複發送。
-
----
-
-## 你需要覆蓋的檔案
-
-main.py
-requirements.txt
-.github/workflows/x-to-discord.yml
-README.md
-
-舊 RSS Secret 已經不再需要。
+如果不刪也可以，程式會把 timeline 中未出現在 state.json 的新 tweet 找出來並發送。

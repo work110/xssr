@@ -2,7 +2,6 @@ import os
 import json
 import re
 import html
-import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -23,8 +22,6 @@ REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "25"))
 STATE_FILE = Path("state.json")
 MAX_SEEN = 100
 
-# X/Twitter 官方嵌入時間線頁。
-# 這不是 X 開發者 API，不需要 API key。
 TIMELINE_URL = (
     "https://syndication.twitter.com/srv/timeline-profile/"
     f"screen-name/{X_HANDLE}"
@@ -56,12 +53,12 @@ def load_state():
         return {"seen": []}
 
 
-def save_state(seen, last_source="syndication-profile"):
+def save_state(seen):
     STATE_FILE.write_text(
         json.dumps(
             {
                 "seen": seen[-MAX_SEEN:],
-                "last_source": last_source,
+                "last_source": "syndication-profile-direct-entries",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             },
             ensure_ascii=False,
@@ -75,9 +72,7 @@ def clean_text(value):
     if value is None:
         return ""
 
-    if not isinstance(value, str):
-        value = str(value)
-
+    value = str(value)
     soup = BeautifulSoup(value, "html.parser")
     text = soup.get_text("\n")
     text = html.unescape(text)
@@ -85,166 +80,103 @@ def clean_text(value):
     return text.strip()
 
 
-def walk(obj):
-    if isinstance(obj, dict):
-        yield obj
-        for value in obj.values():
-            yield from walk(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from walk(item)
+def get_image(tweet):
+    # Twitter syndication timeline 常見媒體位置
+    for container_name in ("extended_entities", "entities"):
+        container = tweet.get(container_name)
+        if not isinstance(container, dict):
+            continue
+
+        media = container.get("media")
+        if not isinstance(media, list):
+            continue
+
+        for item in media:
+            if not isinstance(item, dict):
+                continue
+
+            url = (
+                item.get("media_url_https")
+                or item.get("media_url")
+            )
+            if url:
+                return str(url)
+
+    return None
 
 
-def tweet_url(handle, tweet_id):
-    return f"https://x.com/{handle}/status/{tweet_id}"
-
-
-def extract_tweets_from_next_data(payload):
+def normalize_entry(entry):
     """
-    X syndication timeline 的 JSON 結構可能會調整。
-    這裡不綁死單一路徑，而是遞迴找像 tweet 的物件。
+    只處理 timeline.entries 裡的「頂層 tweet」。
+    不再遞迴掃描整個 JSON，避免把：
+    - 置頂 tweet
+    - quoted tweet 內層作者
+    - user id
+    誤判成最新貼文。
     """
-    found = {}
+    if not isinstance(entry, dict):
+        return None
 
-    for obj in walk(payload):
-        if not isinstance(obj, dict):
-            continue
+    content = entry.get("content")
+    if not isinstance(content, dict):
+        return None
 
-        tweet_id = (
-            obj.get("id_str")
-            or obj.get("rest_id")
-            or obj.get("tweet_id")
-        )
+    tweet = content.get("tweet")
+    if not isinstance(tweet, dict):
+        return None
 
-        # 避免把 user id / 其他 id 誤認成 tweet。
-        text = (
-            obj.get("full_text")
-            or obj.get("text")
-            or obj.get("tweet_text")
-        )
+    tweet_id = tweet.get("id_str") or tweet.get("id")
+    if tweet_id is None:
+        return None
 
-        if tweet_id is None or text is None:
-            continue
+    tweet_id = str(tweet_id)
+    if not tweet_id.isdigit():
+        return None
 
-        tweet_id = str(tweet_id)
+    user = tweet.get("user")
+    if not isinstance(user, dict):
+        return None
 
-        if not tweet_id.isdigit() or len(tweet_id) < 10:
-            continue
+    screen_name = str(user.get("screen_name", ""))
+    if screen_name.lower() != X_HANDLE.lower():
+        return None
 
-        # 嘗試讀作者
-        author = X_HANDLE
+    # 排除 Reply
+    if (
+        tweet.get("in_reply_to_status_id_str")
+        or tweet.get("in_reply_to_screen_name")
+    ):
+        return None
 
-        user = obj.get("user")
-        if isinstance(user, dict):
-            author = (
-                user.get("screen_name")
-                or user.get("username")
-                or author
-            )
-
-        core = obj.get("core")
-        if isinstance(core, dict):
-            user_results = core.get("user_results")
-            if isinstance(user_results, dict):
-                result = user_results.get("result")
-                if isinstance(result, dict):
-                    legacy = result.get("legacy")
-                    if isinstance(legacy, dict):
-                        author = legacy.get("screen_name", author)
-
-        # legacy 結構
-        legacy = obj.get("legacy")
-        if isinstance(legacy, dict):
-            legacy_text = (
-                legacy.get("full_text")
-                or legacy.get("text")
-            )
-            if legacy_text:
-                text = legacy_text
-
-        text = clean_text(text)
-
-        if not text:
-            continue
-
-        # 只保留目標帳號自己的貼文
-        if author and author.lower() != X_HANDLE.lower():
-            continue
-
-        # 排除回覆
-        in_reply_to = (
-            obj.get("in_reply_to_status_id_str")
-            or obj.get("in_reply_to_screen_name")
-        )
-        if isinstance(legacy, dict):
-            in_reply_to = (
-                in_reply_to
-                or legacy.get("in_reply_to_status_id_str")
-                or legacy.get("in_reply_to_screen_name")
-            )
-        if in_reply_to:
-            continue
-
-        # 嘗試找日期
-        created_at = (
-            obj.get("created_at")
-            or (legacy.get("created_at") if isinstance(legacy, dict) else None)
-        )
-
-        # 嘗試找圖片
-        image_url = None
-
-        def inspect_media(container):
-            nonlocal image_url
-            if not isinstance(container, dict):
-                return
-            media = container.get("media")
-            if isinstance(media, list):
-                for item in media:
-                    if not isinstance(item, dict):
-                        continue
-                    candidate = (
-                        item.get("media_url_https")
-                        or item.get("media_url")
-                        or item.get("url")
-                    )
-                    if candidate and str(candidate).startswith("http"):
-                        image_url = str(candidate)
-                        return
-
-        entities = obj.get("entities")
-        if isinstance(entities, dict):
-            inspect_media(entities)
-
-        extended = obj.get("extended_entities")
-        if isinstance(extended, dict):
-            inspect_media(extended)
-
-        if isinstance(legacy, dict):
-            legacy_entities = legacy.get("entities")
-            if isinstance(legacy_entities, dict):
-                inspect_media(legacy_entities)
-            legacy_extended = legacy.get("extended_entities")
-            if isinstance(legacy_extended, dict):
-                inspect_media(legacy_extended)
-
-        found[tweet_id] = {
-            "id": tweet_id,
-            "text": text,
-            "author": author or X_HANDLE,
-            "created_at": created_at,
-            "url": tweet_url(X_HANDLE, tweet_id),
-            "image_url": image_url,
-        }
-
-    # Snowflake tweet id 大體上可按數值大小代表時間先後
-    tweets = sorted(
-        found.values(),
-        key=lambda x: int(x["id"]),
-        reverse=True,
+    text = clean_text(
+        tweet.get("full_text")
+        or tweet.get("text")
+        or ""
     )
 
-    return tweets
+    if not text:
+        return None
+
+    permalink = tweet.get("permalink")
+    if not permalink:
+        permalink = f"https://x.com/{X_HANDLE}/status/{tweet_id}"
+    elif str(permalink).startswith("/"):
+        permalink = "https://x.com" + str(permalink)
+    else:
+        permalink = str(permalink).replace(
+            "https://twitter.com/",
+            "https://x.com/",
+        )
+
+    return {
+        "id": tweet_id,
+        "text": text,
+        "url": permalink,
+        "created_at": tweet.get("created_at"),
+        "image_url": get_image(tweet),
+        "sort_index": str(entry.get("sort_index", "")),
+        "entry_id": str(entry.get("entry_id", "")),
+    }
 
 
 def fetch_profile_timeline():
@@ -258,31 +190,80 @@ def fetch_profile_timeline():
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-
     script = soup.find("script", id="__NEXT_DATA__")
+
     if not script or not script.string:
         raise RuntimeError(
             "X syndication 頁面沒有找到 __NEXT_DATA__。"
-            "可能是 X 調整了嵌入頁結構。"
         )
 
-    try:
-        payload = json.loads(script.string)
-    except Exception as e:
-        raise RuntimeError(f"無法解析 X syndication JSON：{e}")
+    payload = json.loads(script.string)
 
-    tweets = extract_tweets_from_next_data(payload)
+    page_props = (
+        payload.get("props", {})
+        .get("pageProps", {})
+    )
+
+    timeline = page_props.get("timeline", {})
+    entries = timeline.get("entries", [])
+
+    latest_tweet_id = page_props.get("latest_tweet_id")
+    if latest_tweet_id:
+        latest_tweet_id = str(latest_tweet_id)
+        print(f"X 提供的 latest_tweet_id：{latest_tweet_id}")
+    else:
+        print("⚠️ 頁面沒有 latest_tweet_id，改用 tweet ID 排序判斷")
+
+    tweets = []
+
+    for entry in entries:
+        tweet = normalize_entry(entry)
+        if tweet:
+            tweets.append(tweet)
+
+    # 去重
+    unique = {}
+    for tweet in tweets:
+        unique[tweet["id"]] = tweet
+
+    tweets = list(unique.values())
 
     if not tweets:
         raise RuntimeError(
-            "成功讀到 X syndication 頁，但沒有解析出任何正式貼文。"
+            "成功讀到 timeline.entries，但沒有解析出目標帳號正式貼文。"
         )
 
-    print(f"✓ 解析到 {len(tweets)} 條候選貼文")
-    print(
-        f"✓ 最新貼文 ID：{tweets[0]['id']} "
-        f"{tweets[0]['url']}"
+    # Tweet Snowflake ID 可用數值大小判斷先後。
+    tweets.sort(
+        key=lambda x: int(x["id"]),
+        reverse=True,
     )
+
+    # 如果 latest_tweet_id 存在，優先用它驗證真正最新貼文。
+    # 置頂貼文不會覆蓋 latest_tweet_id。
+    if latest_tweet_id:
+        match = next(
+            (t for t in tweets if t["id"] == latest_tweet_id),
+            None,
+        )
+        if match:
+            # 放到第一位
+            tweets = [match] + [
+                t for t in tweets
+                if t["id"] != latest_tweet_id
+            ]
+            print(
+                "✓ 已依 X 的 latest_tweet_id 鎖定真正最新貼文："
+                f"{match['url']}"
+            )
+        else:
+            print(
+                "⚠️ latest_tweet_id 不在目前 entries 中；"
+                "使用頂層 tweet ID 排序。"
+            )
+
+    print(f"✓ 解析到 {len(tweets)} 條正式貼文")
+    print(f"✓ 本次判定最新：{tweets[0]['url']}")
 
     return tweets
 
@@ -308,7 +289,6 @@ def translation_is_bad(result):
 
 
 def translate_zh_tw(text):
-    # 第一順位：Google
     try:
         result = GoogleTranslator(
             source="auto",
@@ -324,7 +304,6 @@ def translate_zh_tw(text):
     except Exception as e:
         print(f"✗ Google 翻譯失敗：{e}")
 
-    # 第二順位：MyMemory
     try:
         result = MyMemoryTranslator(
             source="auto",
@@ -397,13 +376,14 @@ def main():
 
     state = load_state()
     seen = state.get("seen", [])
-    seen_set = set(seen)
+    seen_set = set(str(x) for x in seen)
 
+    # 如果 state 是舊版本留下來的，也能繼續使用。
     if not seen:
         all_ids = [tweet["id"] for tweet in tweets]
 
         if SEND_LATEST_ON_FIRST_RUN:
-            print("第一次執行：發送目前最新貼文。")
+            print("第一次執行：發送真正最新貼文。")
             send_discord(tweets[0])
         else:
             print("第一次執行：只建立基準，不發送舊貼文。")
@@ -411,6 +391,7 @@ def main():
         save_state(all_ids)
         return
 
+    # 只找尚未發過的正式貼文。
     new_tweets = [
         tweet for tweet in tweets
         if tweet["id"] not in seen_set
@@ -421,8 +402,11 @@ def main():
         save_state(seen)
         return
 
-    # 舊 → 新 發送
-    for tweet in reversed(new_tweets):
+    # 依 ID 從舊到新發送。
+    # 即使 30 分鐘內官方連發幾條，也不會只漏剩最後一條。
+    new_tweets.sort(key=lambda x: int(x["id"]))
+
+    for tweet in new_tweets:
         print(f"發送：{tweet['url']}")
         send_discord(tweet)
 

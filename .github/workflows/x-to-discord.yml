@@ -18,10 +18,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -36,6 +36,7 @@ jobs:
           WEBHOOK_NAME: "燕雲官方情報"
           SEND_LATEST_ON_FIRST_RUN: "true"
           REQUEST_TIMEOUT: "20"
+          MAX_FEED_AGE_DAYS: "14"
         run: python main.py
 
       - name: Save state

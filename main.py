@@ -5,16 +5,15 @@ import html
 import hashlib
 from pathlib import Path
 from urllib.parse import urlparse
+from datetime import datetime, timezone, timedelta
 
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 
 DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-# 多 RSS：優先讀取 RSS_URLS，每行一個。
-# 為了相容舊設定，如果沒有 RSS_URLS，也會嘗試 RSS_URL。
 RSS_URLS_RAW = os.environ.get("RSS_URLS", "").strip()
 SINGLE_RSS_URL = os.environ.get("RSS_URL", "").strip()
 
@@ -30,12 +29,14 @@ SEND_LATEST_ON_FIRST_RUN = os.environ.get(
 
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
 
+# RSS 最新內容超過多少天，就視為「可訪問但內容可能已停更」
+MAX_FEED_AGE_DAYS = int(os.environ.get("MAX_FEED_AGE_DAYS", "14"))
+
 
 def get_rss_urls():
     urls = []
 
     if RSS_URLS_RAW:
-        # 支援每行一個，也支援逗號分隔
         chunks = []
         for line in RSS_URLS_RAW.splitlines():
             chunks.extend(line.split(","))
@@ -62,6 +63,67 @@ def safe_source_name(url):
         return url
 
 
+def parse_entry_datetime(entry):
+    # feedparser 常見欄位：
+    # published_parsed / updated_parsed
+    for key in ("published_parsed", "updated_parsed"):
+        value = entry.get(key)
+        if value:
+            try:
+                return datetime(
+                    value.tm_year,
+                    value.tm_mon,
+                    value.tm_mday,
+                    value.tm_hour,
+                    value.tm_min,
+                    value.tm_sec,
+                    tzinfo=timezone.utc,
+                )
+            except Exception:
+                pass
+
+    # 備援：嘗試 ISO 字串
+    for key in ("published", "updated"):
+        value = entry.get(key)
+        if not value:
+            continue
+
+        try:
+            normalized = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    return None
+
+
+def is_feed_fresh(feed):
+    if not feed.entries:
+        return False, "沒有任何項目"
+
+    latest = feed.entries[0]
+    latest_dt = parse_entry_datetime(latest)
+
+    # 有些第三方 RSS 不提供可靠日期。
+    # 這種情況不直接判死刑，避免誤殺正常 feed。
+    if latest_dt is None:
+        return True, "無法解析最新貼文日期，暫時接受"
+
+    age = datetime.now(timezone.utc) - latest_dt
+
+    if age > timedelta(days=MAX_FEED_AGE_DAYS):
+        return (
+            False,
+            f"最新項目距今約 {age.days} 天，超過 "
+            f"{MAX_FEED_AGE_DAYS} 天門檻"
+        )
+
+    return True, f"最新項目距今約 {age.days} 天"
+
+
 def fetch_feed_with_fallback(urls):
     errors = []
 
@@ -70,14 +132,13 @@ def fetch_feed_with_fallback(urls):
         print(f"[{index}/{len(urls)}] 嘗試 RSS：{source_name}")
 
         try:
-            # 先自己 GET，這樣可以控制 timeout / status code / user-agent
             response = requests.get(
                 url,
                 timeout=REQUEST_TIMEOUT,
                 headers={
                     "User-Agent": (
                         "Mozilla/5.0 (compatible; "
-                        "WhereWindsMeetDiscordRSSBot/1.0)"
+                        "WhereWindsMeetDiscordRSSBot/2.0)"
                     )
                 },
             )
@@ -91,9 +152,14 @@ def fetch_feed_with_fallback(urls):
             if not feed.entries:
                 raise RuntimeError("RSS 回傳成功，但沒有任何項目。")
 
+            fresh, reason = is_feed_fresh(feed)
+
+            if not fresh:
+                raise RuntimeError(f"RSS 內容疑似過期：{reason}")
+
             print(
                 f"✓ RSS 可用：{source_name}，"
-                f"讀取到 {len(feed.entries)} 個項目"
+                f"讀取到 {len(feed.entries)} 個項目；{reason}"
             )
 
             return feed, url
@@ -172,18 +238,65 @@ def entry_text(entry):
     return "(無文字內容)"
 
 
+def translation_is_bad(result):
+    if not result:
+        return True
+
+    lower = result.lower()
+
+    bad_words = [
+        "error 500",
+        "server error",
+        "that's an error",
+        "please try again later",
+        "<html",
+        "<!doctype",
+        "service unavailable",
+        "bad gateway",
+    ]
+
+    return any(word in lower for word in bad_words)
+
+
 def translate_zh_tw(text):
     if not text or text == "(無文字內容)":
         return text
 
+    # 第一順位：Google
     try:
-        return GoogleTranslator(
+        result = GoogleTranslator(
             source="auto",
             target="zh-TW",
         ).translate(text)
+
+        if not translation_is_bad(result):
+            print("✓ Google 翻譯成功")
+            return result
+
+        print("✗ Google 返回疑似錯誤頁，改用 MyMemory")
+
     except Exception as e:
-        print(f"翻譯失敗：{e}")
-        return "⚠️ 自動翻譯失敗，請查看下方原文。"
+        print(f"✗ Google 翻譯失敗：{e}")
+
+    # 第二順位：MyMemory
+    try:
+        # MyMemory 對語言代碼通常用 zh-TW 也可，
+        # 若服務端不接受，會被 except 捕捉。
+        result = MyMemoryTranslator(
+            source="auto",
+            target="zh-TW",
+        ).translate(text)
+
+        if not translation_is_bad(result):
+            print("✓ MyMemory 翻譯成功")
+            return result
+
+        print("✗ MyMemory 返回異常結果")
+
+    except Exception as e:
+        print(f"✗ MyMemory 翻譯失敗：{e}")
+
+    return "⚠️ 中文翻譯暫時失敗，請查看下方原文。"
 
 
 def truncate(text, limit):
@@ -270,7 +383,6 @@ def main():
     seen = load_seen()
     seen_set = set(seen)
 
-    # 第一次運行：建立基準
     if not seen:
         current_ids = [item_id(e) for e in entries]
 
@@ -295,7 +407,6 @@ def main():
         save_seen(seen, active_rss_url)
         return
 
-    # RSS 一般是 新 → 舊，因此反轉後依正常時間順序發 Discord
     sent_count = 0
 
     for entry in reversed(new_entries):
@@ -313,8 +424,6 @@ def main():
         if eid not in seen:
             seen.append(eid)
 
-        # 每成功發一條就立刻保存 state，
-        # 防止中途失敗後下一次重發前面已成功的貼文。
         save_seen(seen, active_rss_url)
         sent_count += 1
 

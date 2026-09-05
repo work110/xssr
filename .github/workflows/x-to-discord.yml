@@ -3,8 +3,7 @@ name: WWM X to Discord
 on:
   workflow_dispatch:
   schedule:
-    # 每 3 小時執行一次
-    # GitHub Actions cron 使用 UTC
+    # UTC 每 3 小時第 07 分執行
     - cron: "7 */3 * * *"
 
 permissions:
@@ -31,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Fetch X, translate, send Discord
+      - name: Resolve user, fetch timeline, translate, send Discord
         env:
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}

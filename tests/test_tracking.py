@@ -24,6 +24,9 @@ class TrackingTests(unittest.TestCase):
         state_patch = patch.object(main, "STATE_FILE", Path(temporary.name) / "state.json")
         state_patch.start()
         self.addCleanup(state_patch.stop)
+        api_patch = patch.object(main, "YOUTUBE_API_KEY", "test-key")
+        api_patch.start()
+        self.addCleanup(api_patch.stop)
 
     def run_youtube(self, videos, channel=CHANNEL, failure=None):
         with patch.object(main.config, "YOUTUBE_CHANNEL_ID", channel), \
@@ -46,42 +49,62 @@ class TrackingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             main.normalize_x_username("https://x.com/example/status/123")
 
-    def test_youtube_handle_formats_resolve_page_identity(self):
-        html = (f'<script>{{"channelId":"{OTHER_CHANNEL}"}}</script>'
-                f'<link href="https://www.youtube.com/channel/{CHANNEL}" rel="canonical">'
-                f'<meta content="{CHANNEL}" itemprop="identifier">')
+    def test_youtube_handle_formats_use_api(self):
         for value in ('WhereWindsMeet', '@WhereWindsMeet', 'https://www.youtube.com/@WhereWindsMeet', 'youtube.com/@WhereWindsMeet/'):
-            with self.subTest(value=value), patch.object(main.SESSION, 'get', return_value=Mock(ok=True, text=html)) as get:
+            with self.subTest(value=value), patch.object(main.SESSION, 'get', return_value=Mock(ok=True, json=Mock(return_value={'items': [{'id': CHANNEL}]}))) as get:
                 self.assertEqual(main.normalize_youtube_channel(value), CHANNEL)
-                self.assertEqual(get.call_args.args[0], 'https://www.youtube.com/@WhereWindsMeet')
+                self.assertEqual(get.call_args.args[0], 'https://www.googleapis.com/youtube/v3/channels')
+                self.assertEqual(get.call_args.kwargs['params']['forHandle'], 'WhereWindsMeet')
 
-    def test_youtube_id_does_not_request_channel_page(self):
+    def test_youtube_id_needs_no_resolution_request(self):
         with patch.object(main.SESSION, 'get') as get:
             self.assertEqual(main.normalize_youtube_channel(CHANNEL), CHANNEL)
             get.assert_not_called()
 
-    def test_handle_resolution_fails_without_reliable_identity(self):
-        for response in (Mock(ok=False, status_code=404),
-                         Mock(ok=True, text=f'<script>{{"channelId":"{CHANNEL}"}}</script>'),
-                         Mock(ok=True, text=f'<meta itemprop="identifier" content="{CHANNEL}"><link rel="canonical" href="https://www.youtube.com/channel/{OTHER_CHANNEL}">')):
-            with patch.object(main.SESSION, 'get', return_value=response):
-                with self.assertRaises(RuntimeError):
-                    main.normalize_youtube_channel('WhereWindsMeet')
+    def test_handle_resolution_rejects_missing_channel(self):
+        with patch.object(main.SESSION, 'get', return_value=Mock(ok=True, json=Mock(return_value={'items': []}))):
+            with self.assertRaises(RuntimeError):
+                main.normalize_youtube_channel('WhereWindsMeet')
 
     def test_handle_and_id_share_seen_history(self):
         self.run_youtube([video(1)])
-        with patch.object(main.SESSION, 'get', return_value=Mock(ok=True, text=f'<meta itemprop="identifier" content="{CHANNEL}">')):
+        with patch.object(main.SESSION, 'get', return_value=Mock(ok=True, json=Mock(return_value={'items': [{'id': CHANNEL}]}))):
             self.assertEqual(self.run_youtube([video(1)], '@WhereWindsMeet').call_count, 0)
 
-    def test_parse_feed_and_sort(self):
-        entries = ''.join(f'<entry><yt:videoId>{n:011d}</yt:videoId><title>Video &amp; {n}</title><published>2026-09-0{n}T00:00:00Z</published><author><name>Official</name></author></entry>' for n in (2, 1))
-        xml = f'<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015"><yt:channelId>{CHANNEL}</yt:channelId>{entries}</feed>'
-        with patch.object(main.SESSION, "get", return_value=Mock(ok=True, content=xml.encode())):
+    def test_missing_api_key_fails_before_network(self):
+        with patch.object(main, 'YOUTUBE_API_KEY', ''), patch.object(main.config, 'YOUTUBE_CHANNEL_ID', CHANNEL), patch.object(main.SESSION, 'get') as get:
+            with self.assertRaisesRegex(RuntimeError, 'YOUTUBE_API_KEY'):
+                main.run_youtube()
+            get.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, 'YOUTUBE_API_KEY'):
+                main.youtube_api_request('channels', {})
+            get.assert_not_called()
+
+    def test_api_mode_resolves_handle_without_html(self):
+        with patch.object(main, 'YOUTUBE_API_KEY', 'test-key'), patch.object(main.SESSION, 'get', return_value=Mock(ok=True, json=Mock(return_value={'items': [{'id': CHANNEL}]}))) as get:
+            self.assertEqual(main.normalize_youtube_channel('WhereWindsMeet'), CHANNEL)
+            self.assertEqual(get.call_args.kwargs['params']['forHandle'], 'WhereWindsMeet')
+            self.assertIn('googleapis.com/youtube/v3/channels', get.call_args.args[0])
+
+    def test_api_mode_fetches_uploads_filters_and_sorts(self):
+        items = [{'snippet': {'title': f'Video {n}', 'videoOwnerChannelId': CHANNEL, 'videoOwnerChannelTitle': 'Official'},
+                  'contentDetails': {'videoId': f'{n:011d}', 'videoPublishedAt': f'2026-09-0{n}T00:00:00Z'},
+                  'status': {'privacyStatus': 'public' if n != 3 else 'private'}} for n in (2, 1, 3)]
+        responses = [Mock(ok=True, json=Mock(return_value={'items': [{'id': CHANNEL, 'contentDetails': {'relatedPlaylists': {'uploads': 'uploads-list'}}}]})),
+                     Mock(ok=True, json=Mock(return_value={'items': items}))]
+        with patch.object(main, 'YOUTUBE_API_KEY', 'test-key'), patch.object(main.SESSION, 'get', side_effect=responses) as get:
             videos = main.fetch_youtube_videos(CHANNEL)
             self.assertEqual([v['id'] for v in videos], [video(1)['id'], video(2)['id']])
-            self.assertEqual(videos[0]['title'], 'Video & 1')
-            with self.assertRaises(RuntimeError):
-                main.fetch_youtube_videos(OTHER_CHANNEL)
+            self.assertEqual(get.call_args.kwargs['params']['playlistId'], 'uploads-list')
+            self.assertEqual(get.call_count, 2)
+            self.assertTrue(all('googleapis.com' in call.args[0] for call in get.call_args_list))
+
+    def test_api_error_does_not_leak_key(self):
+        with patch.object(main, 'YOUTUBE_API_KEY', 'private-key'), patch.object(main.SESSION, 'get', side_effect=main.requests.ConnectionError('https://example.test/?key=private-key')):
+            with self.assertRaises(RuntimeError) as caught:
+                main.youtube_api_request('channels', {})
+            self.assertNotIn('private-key', str(caught.exception))
+            self.assertTrue(caught.exception.__suppress_context__)
 
     def test_first_run_then_new_videos_and_no_duplicates(self):
         send = self.run_youtube([video(1), video(2)])
@@ -136,7 +159,7 @@ class TrackingTests(unittest.TestCase):
             self.assertEqual(post.call_args_list[0].kwargs['json'], post.call_args_list[1].kwargs['json'])
 
     def test_unconfigured_youtube_skips_requests(self):
-        with patch.object(main.config, 'YOUTUBE_CHANNEL_ID', ''), patch.object(main.SESSION, 'get') as get:
+        with patch.object(main, 'YOUTUBE_API_KEY', ''), patch.object(main.config, 'YOUTUBE_CHANNEL_ID', ''), patch.object(main.SESSION, 'get') as get:
             main.run_youtube()
             get.assert_not_called()
 

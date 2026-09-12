@@ -1,11 +1,9 @@
 import json
 import os
 import re
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -17,6 +15,7 @@ STATE_FILE = Path("state.json")
 
 TWITTER_API_KEY = os.environ.get("TWITTER_API_KEY", "").strip()
 DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY", "").strip()
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 DISCORD_WEBHOOK_URL_2 = os.environ.get("DISCORD_WEBHOOK_URL_2", "").strip()
 
@@ -698,26 +697,6 @@ def run_x():
     )
 
 
-class YouTubeChannelParser(HTMLParser):
-    """Read page-level channel identity, never IDs of recommended channels."""
-
-    def __init__(self):
-        super().__init__()
-        self.channel_ids = set()
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        candidate = ""
-        if tag == "meta" and attrs.get("itemprop") in ("identifier", "channelId"):
-            candidate = attrs.get("content", "")
-        elif tag == "link" and "canonical" in attrs.get("rel", "").split():
-            parsed = urlparse(attrs.get("href", ""))
-            if parsed.hostname in ("www.youtube.com", "youtube.com"):
-                candidate = parsed.path.removeprefix("/channel/").rstrip("/")
-        if re.fullmatch(r"UC[A-Za-z0-9_-]{22}", candidate):
-            self.channel_ids.add(candidate)
-
-
 def normalize_youtube_channel(value):
     value = value.strip()
     if "://" in value or value.startswith(("youtube.com/", "www.youtube.com/")):
@@ -739,45 +718,62 @@ def normalize_youtube_channel(value):
     if not re.fullmatch(r"[\w.\-·]{1,100}", handle):
         raise ValueError("YOUTUBE_CHANNEL_ID 請填頻道 ID、handle（例如 WhereWindsMeet）或頻道連結")
     print("YouTube: resolving handle to channel ID")
-    response = SESSION.get(
-        "https://www.youtube.com/@" + quote(handle, safe=""),
-        timeout=config.REQUEST_TIMEOUT,
-    )
+    data = youtube_api_request("channels", {"part": "id", "forHandle": handle})
+    items = data.get("items", [])
+    if len(items) != 1 or not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", items[0].get("id", "")):
+        raise RuntimeError("YouTube API 找不到該 handle 對應的頻道")
+    print("YouTube: channel ID resolved via Data API")
+    return items[0]["id"]
+
+
+def youtube_api_request(resource, params):
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("缺少 GitHub Secrets: YOUTUBE_API_KEY")
+    try:
+        response = SESSION.get(
+            f"https://www.googleapis.com/youtube/v3/{resource}",
+            params={**params, "key": YOUTUBE_API_KEY},
+            timeout=config.REQUEST_TIMEOUT,
+        )
+    except requests.RequestException:
+        # Never include a request URL containing the API key in a traceback.
+        raise RuntimeError(f"YouTube Data API {resource}: network request failed") from None
     if not response.ok:
-        raise RuntimeError(f"YouTube channel page HTTP {response.status_code}; 請確認 handle 或改填 UC 開頭的頻道 ID")
-    parser = YouTubeChannelParser()
-    parser.feed(response.text)
-    if len(parser.channel_ids) != 1:
-        raise RuntimeError("無法從 YouTube 頻道頁解析唯一頻道 ID；請改填 UC 開頭的完整頻道 ID")
-    print("YouTube: channel ID resolved")
-    return parser.channel_ids.pop()
+        raise RuntimeError(
+            f"YouTube Data API {resource} HTTP {response.status_code}; "
+            "請檢查 YOUTUBE_API_KEY、YouTube Data API v3 是否已啟用，以及金鑰限制和配額"
+        )
+    return response.json()
 
 
 def fetch_youtube_videos(channel_id):
-    response = SESSION.get(
-        "https://www.youtube.com/feeds/videos.xml",
-        params={"channel_id": channel_id},
-        timeout=config.REQUEST_TIMEOUT,
-    )
-    if not response.ok:
-        raise RuntimeError(f"YouTube feed HTTP {response.status_code}")
-    root = ET.fromstring(response.content)
-    ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-    if root.tag != "{http://www.w3.org/2005/Atom}feed":
-        raise RuntimeError("YouTube returned an invalid feed")
-    if root.findtext("yt:channelId", namespaces=ns) != channel_id:
-        raise RuntimeError("YouTube feed channel ID does not match the setting")
+    print("YouTube: using Data API")
+    data = youtube_api_request("channels", {"part": "contentDetails", "id": channel_id})
+    channels = data.get("items", [])
+    if len(channels) != 1 or channels[0].get("id") != channel_id:
+        raise RuntimeError("YouTube API 找不到指定頻道")
+    uploads = channels[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+    if not uploads:
+        raise RuntimeError("YouTube API 未返回頻道的上傳播放清單")
+    data = youtube_api_request("playlistItems", {
+        "part": "snippet,contentDetails,status", "playlistId": uploads, "maxResults": 50,
+    })
     videos = {}
-    for entry in root.findall("atom:entry", ns):
-        video_id = entry.findtext("yt:videoId", default="", namespaces=ns)
-        title = entry.findtext("atom:title", default="", namespaces=ns)
-        published = entry.findtext("atom:published", default="", namespaces=ns)
-        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) or not title or not published:
+    for item in data.get("items", []):
+        snippet = item.get("snippet", {})
+        details = item.get("contentDetails", {})
+        video_id = details.get("videoId", "")
+        published = details.get("videoPublishedAt", "")
+        title = snippet.get("title", "")
+        if (item.get("status", {}).get("privacyStatus") != "public"
+                or snippet.get("videoOwnerChannelId") != channel_id
+                or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+                or not published or not title):
             continue
         videos[video_id] = {
             "id": video_id, "title": title,
             "published": datetime.fromisoformat(published.replace("Z", "+00:00")),
-            "author": entry.findtext("atom:author/atom:name", default=channel_id, namespaces=ns),
+            "author": snippet.get("videoOwnerChannelTitle") or channel_id,
         }
     return sorted(videos.values(), key=lambda video: video["published"])
 
@@ -786,12 +782,14 @@ def run_youtube():
     if not config.YOUTUBE_CHANNEL_ID:
         print("YouTube tracking disabled: YOUTUBE_CHANNEL_ID is empty")
         return
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("缺少 GitHub Secrets: YOUTUBE_API_KEY")
     if not DISCORD_WEBHOOK_URL:
         raise RuntimeError("缺少 GitHub Secrets: DISCORD_WEBHOOK_URL")
     channel_id = normalize_youtube_channel(config.YOUTUBE_CHANNEL_ID)
     videos = fetch_youtube_videos(channel_id)
     if not videos:
-        print("YouTube: no videos in feed")
+        print("YouTube: no public videos returned by Data API")
         return
     state = load_state()
     accounts = state.setdefault("youtube_channels", {})

@@ -40,11 +40,38 @@ class TrackingTests(unittest.TestCase):
             self.assertEqual(main.normalize_x_username(value), "WhereWindsMeet_")
         for value in (CHANNEL, f"https://www.youtube.com/channel/{CHANNEL}"):
             self.assertEqual(main.normalize_youtube_channel(value), CHANNEL)
-        for value in ("@example", "https://example.com/channel/" + CHANNEL):
+        for value in ("@", "https://example.com/channel/" + CHANNEL):
             with self.assertRaises(ValueError):
                 main.normalize_youtube_channel(value)
         with self.assertRaises(ValueError):
             main.normalize_x_username("https://x.com/example/status/123")
+
+    def test_youtube_handle_formats_resolve_page_identity(self):
+        html = (f'<script>{{"channelId":"{OTHER_CHANNEL}"}}</script>'
+                f'<link href="https://www.youtube.com/channel/{CHANNEL}" rel="canonical">'
+                f'<meta content="{CHANNEL}" itemprop="identifier">')
+        for value in ('WhereWindsMeet', '@WhereWindsMeet', 'https://www.youtube.com/@WhereWindsMeet', 'youtube.com/@WhereWindsMeet/'):
+            with self.subTest(value=value), patch.object(main.SESSION, 'get', return_value=Mock(ok=True, text=html)) as get:
+                self.assertEqual(main.normalize_youtube_channel(value), CHANNEL)
+                self.assertEqual(get.call_args.args[0], 'https://www.youtube.com/@WhereWindsMeet')
+
+    def test_youtube_id_does_not_request_channel_page(self):
+        with patch.object(main.SESSION, 'get') as get:
+            self.assertEqual(main.normalize_youtube_channel(CHANNEL), CHANNEL)
+            get.assert_not_called()
+
+    def test_handle_resolution_fails_without_reliable_identity(self):
+        for response in (Mock(ok=False, status_code=404),
+                         Mock(ok=True, text=f'<script>{{"channelId":"{CHANNEL}"}}</script>'),
+                         Mock(ok=True, text=f'<meta itemprop="identifier" content="{CHANNEL}"><link rel="canonical" href="https://www.youtube.com/channel/{OTHER_CHANNEL}">')):
+            with patch.object(main.SESSION, 'get', return_value=response):
+                with self.assertRaises(RuntimeError):
+                    main.normalize_youtube_channel('WhereWindsMeet')
+
+    def test_handle_and_id_share_seen_history(self):
+        self.run_youtube([video(1)])
+        with patch.object(main.SESSION, 'get', return_value=Mock(ok=True, text=f'<meta itemprop="identifier" content="{CHANNEL}">')):
+            self.assertEqual(self.run_youtube([video(1)], '@WhereWindsMeet').call_count, 0)
 
     def test_parse_feed_and_sort(self):
         entries = ''.join(f'<entry><yt:videoId>{n:011d}</yt:videoId><title>Video &amp; {n}</title><published>2026-09-0{n}T00:00:00Z</published><author><name>Official</name></author></entry>' for n in (2, 1))

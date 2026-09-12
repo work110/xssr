@@ -20,17 +20,19 @@ Secrets:
 - DISCORD_WEBHOOK_URL
 - DISCORD_WEBHOOK_URL_2 (optional)
 
-## 動態追蹤設定（Actions Variables）
+## 動態追蹤設定（Actions Variables 或 Secrets）
 
 在 GitHub 儲存庫 **Settings → Secrets and variables → Actions → Variables**
 選擇 **New repository variable**，新增以下設定。修改後下次定時或手動執行即生效，無需改程式碼。
+也可在 **Secrets → New repository secret** 設定同名值。兩邊都有設定時，優先使用非空的 Variable。
 
 | Variable | 填寫方式 | 未設定時 |
 | --- | --- | --- |
 | `X_USERNAME` | `WhereWindsMeet_`、`@WhereWindsMeet_` 或 `https://x.com/WhereWindsMeet_` | 繼續追蹤 `WhereWindsMeet_` |
-| `YOUTUBE_CHANNEL_ID` | `UC` 開頭的完整頻道 ID，或 `https://www.youtube.com/channel/UC...` | 不啟用 YouTube 追蹤 |
+| `YOUTUBE_CHANNEL_ID` | `WhereWindsMeet`、`@WhereWindsMeet`、`https://www.youtube.com/@WhereWindsMeet`、完整 `UC` 頻道 ID 或 `/channel/UC...` 連結 | 不啟用 YouTube 追蹤 |
 
-YouTube 請使用實際的頻道 ID，不能直接填 `@handle`、`/c/`、`/user/` 或影片連結。
+YouTube 裸帳號名稱視為 handle，不是任意頻道顯示名稱；不支援 `/c/`、`/user/` 或影片連結。
+handle 會先從公開頻道頁解析為 ID，再使用該 ID 取得影片與去重；解析失敗時可改填完整頻道 ID。
 頻道 ID 連結格式可參考 [YouTube 官方說明](https://support.google.com/youtube/answer/6180214?hl=zh-Hant)。
 本機執行時也可設定同名環境變數。
 

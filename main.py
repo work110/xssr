@@ -3,8 +3,9 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -697,17 +698,59 @@ def run_x():
     )
 
 
+class YouTubeChannelParser(HTMLParser):
+    """Read page-level channel identity, never IDs of recommended channels."""
+
+    def __init__(self):
+        super().__init__()
+        self.channel_ids = set()
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        candidate = ""
+        if tag == "meta" and attrs.get("itemprop") in ("identifier", "channelId"):
+            candidate = attrs.get("content", "")
+        elif tag == "link" and "canonical" in attrs.get("rel", "").split():
+            parsed = urlparse(attrs.get("href", ""))
+            if parsed.hostname in ("www.youtube.com", "youtube.com"):
+                candidate = parsed.path.removeprefix("/channel/").rstrip("/")
+        if re.fullmatch(r"UC[A-Za-z0-9_-]{22}", candidate):
+            self.channel_ids.add(candidate)
+
+
 def normalize_youtube_channel(value):
     value = value.strip()
     if "://" in value or value.startswith(("youtube.com/", "www.youtube.com/")):
         parsed = urlparse(value if "://" in value else "https://" + value)
         if parsed.hostname not in ("youtube.com", "www.youtube.com"):
-            raise ValueError("YOUTUBE_CHANNEL_ID 必須是 YouTube 頻道 ID 或 /channel/ 連結")
-        path = parsed.path.strip("/").split("/")
-        value = path[1] if len(path) == 2 and path[0] == "channel" else ""
-    if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", value):
-        raise ValueError("YOUTUBE_CHANNEL_ID 請填 UC 開頭的頻道 ID 或 https://www.youtube.com/channel/UC...，不支援 @handle")
-    return value
+            raise ValueError("YOUTUBE_CHANNEL_ID 必須是 YouTube 頻道 ID、handle 或頻道連結")
+        path = unquote(parsed.path).strip("/").split("/")
+        if len(path) == 2 and path[0] == "channel":
+            value = path[1]
+            if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", value):
+                raise ValueError("YouTube /channel/ 連結內的頻道 ID 格式錯誤")
+        elif len(path) == 1 and path[0].startswith("@"):
+            value = path[0]
+        else:
+            raise ValueError("請使用 YouTube /@handle 或 /channel/UC... 頻道連結")
+    if re.fullmatch(r"UC[A-Za-z0-9_-]{22}", value):
+        return value
+    handle = value.removeprefix("@")
+    if not re.fullmatch(r"[\w.\-·]{1,100}", handle):
+        raise ValueError("YOUTUBE_CHANNEL_ID 請填頻道 ID、handle（例如 WhereWindsMeet）或頻道連結")
+    print("YouTube: resolving handle to channel ID")
+    response = SESSION.get(
+        "https://www.youtube.com/@" + quote(handle, safe=""),
+        timeout=config.REQUEST_TIMEOUT,
+    )
+    if not response.ok:
+        raise RuntimeError(f"YouTube channel page HTTP {response.status_code}; 請確認 handle 或改填 UC 開頭的頻道 ID")
+    parser = YouTubeChannelParser()
+    parser.feed(response.text)
+    if len(parser.channel_ids) != 1:
+        raise RuntimeError("無法從 YouTube 頻道頁解析唯一頻道 ID；請改填 UC 開頭的完整頻道 ID")
+    print("YouTube: channel ID resolved")
+    return parser.channel_ids.pop()
 
 
 def fetch_youtube_videos(channel_id):

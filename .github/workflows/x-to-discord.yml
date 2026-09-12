@@ -31,8 +31,8 @@ jobs:
 
       - name: Fetch X and YouTube, translate, send Discord
         env:
-          X_USERNAME: ${{ vars.X_USERNAME }}
-          YOUTUBE_CHANNEL_ID: ${{ vars.YOUTUBE_CHANNEL_ID }}
+          X_USERNAME: ${{ vars.X_USERNAME || secrets.X_USERNAME }}
+          YOUTUBE_CHANNEL_ID: ${{ vars.YOUTUBE_CHANNEL_ID || secrets.YOUTUBE_CHANNEL_ID }}
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

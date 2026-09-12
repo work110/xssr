@@ -1,7 +1,10 @@
 import json
 import os
+import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -14,6 +17,7 @@ STATE_FILE = Path("state.json")
 TWITTER_API_KEY = os.environ.get("TWITTER_API_KEY", "").strip()
 DEEPL_API_KEY = os.environ.get("DEEPL_API_KEY", "").strip()
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_WEBHOOK_URL_2 = os.environ.get("DISCORD_WEBHOOK_URL_2", "").strip()
 
 
 def make_session():
@@ -75,13 +79,22 @@ def load_state():
 
 
 def save_state(seen, user_id):
+    state = load_state()
+    if state.get("user_id"):
+        state.setdefault("x_accounts", {}).setdefault(str(state["user_id"]), state.get("seen", []))
+    state.update({
+        "user_id": user_id,
+        "seen": seen[-config.MAX_SEEN_IDS:],
+    })
+    state.setdefault("x_accounts", {})[user_id] = state["seen"]
+    write_state(state)
+
+
+def write_state(state):
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
     STATE_FILE.write_text(
         json.dumps(
-            {
-                "user_id": user_id,
-                "seen": seen[-config.MAX_SEEN_IDS:],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
+            state,
             ensure_ascii=False,
             indent=2,
         ),
@@ -470,7 +483,7 @@ def send_to_discord(tweet):
 
     embed = {
         "title":
-            config.DISCORD_TITLE,
+            f"@{config.X_USERNAME}｜{config.DISCORD_TITLE}",
 
         "url":
             tweet["url"],
@@ -489,7 +502,7 @@ def send_to_discord(tweet):
 
         "footer": {
             "text":
-                config.DISCORD_FOOTER
+                f"{config.DISCORD_FOOTER} @{config.X_USERNAME}"
         },
     }
 
@@ -500,47 +513,69 @@ def send_to_discord(tweet):
             "url": image
         }
 
+    send_discord_embed(embed)
+    print("Discord sent:", tweet["id"])
+
+
+def send_discord_embed(embed):
     print("[5/5] Sending Discord")
 
-    r = SESSION.post(
-        DISCORD_WEBHOOK_URL,
-        json={
-            "username":
-                config.DISCORD_USERNAME,
+    payload = {
+        "username": config.DISCORD_USERNAME,
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
 
-            "embeds":
-                [embed],
+    # Ignore an empty second webhook and avoid sending twice to the same URL.
+    webhook_urls = list(dict.fromkeys(
+        url for url in (DISCORD_WEBHOOK_URL, DISCORD_WEBHOOK_URL_2) if url
+    ))
+    failures = []
+    for channel, webhook_url in enumerate(webhook_urls, start=1):
+        try:
+            r = SESSION.post(
+                webhook_url,
+                json=payload,
+                timeout=config.REQUEST_TIMEOUT,
+            )
+        except requests.RequestException:
+            # Request exceptions can contain the secret webhook URL.
+            failures.append(f"channel {channel}: request failed")
+            continue
 
-            "allowed_mentions": {
-                "parse": []
-            },
-        },
-        timeout=config.REQUEST_TIMEOUT,
-    )
+        print(f"Discord channel {channel} HTTP {r.status_code}")
+        if not r.ok:
+            failures.append(f"channel {channel}: HTTP {r.status_code}")
 
-    print(
-        "Discord HTTP",
-        r.status_code
-    )
+    if failures:
+        raise RuntimeError("Discord delivery failed: " + "; ".join(failures))
 
-    if not r.ok:
-        raise RuntimeError(
-            f"Discord HTTP {r.status_code}: "
-            f"{r.text[:500]}"
-        )
-
-    print(
-        "Discord sent:",
-        tweet["id"]
-    )
+def normalize_x_username(value):
+    value = value.strip()
+    if "://" in value or value.startswith(("x.com/", "twitter.com/", "www.x.com/", "www.twitter.com/")):
+        parsed = urlparse(value if "://" in value else "https://" + value)
+        if parsed.hostname not in ("x.com", "www.x.com", "twitter.com", "www.twitter.com"):
+            raise ValueError("X_USERNAME 必須是 X 帳號或 x.com/twitter.com 個人頁面連結")
+        value = parsed.path.strip("/")
+    value = value.removeprefix("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", value):
+        raise ValueError("X_USERNAME 必須是 X 帳號或個人頁面連結")
+    return value
 
 
-def main():
+def run_x():
+    config.X_USERNAME = normalize_x_username(config.X_USERNAME)
     validate_secrets()
 
     state = load_state()
 
     user_id = resolve_user_id()
+
+    # Migrate the old single-account state only when its user ID matches.
+    account_seen = state.get("x_accounts", {}).get(user_id)
+    if account_seen is None:
+        account_seen = state.get("seen", []) if str(state.get("user_id")) == user_id else []
+    state["seen"] = account_seen
 
     raw_tweets, source = (
         fetch_raw_tweets(user_id)
@@ -660,6 +695,106 @@ def main():
         f"完成，共發送 "
         f"{count} 條。"
     )
+
+
+def normalize_youtube_channel(value):
+    value = value.strip()
+    if "://" in value or value.startswith(("youtube.com/", "www.youtube.com/")):
+        parsed = urlparse(value if "://" in value else "https://" + value)
+        if parsed.hostname not in ("youtube.com", "www.youtube.com"):
+            raise ValueError("YOUTUBE_CHANNEL_ID 必須是 YouTube 頻道 ID 或 /channel/ 連結")
+        path = parsed.path.strip("/").split("/")
+        value = path[1] if len(path) == 2 and path[0] == "channel" else ""
+    if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", value):
+        raise ValueError("YOUTUBE_CHANNEL_ID 請填 UC 開頭的頻道 ID 或 https://www.youtube.com/channel/UC...，不支援 @handle")
+    return value
+
+
+def fetch_youtube_videos(channel_id):
+    response = SESSION.get(
+        "https://www.youtube.com/feeds/videos.xml",
+        params={"channel_id": channel_id},
+        timeout=config.REQUEST_TIMEOUT,
+    )
+    if not response.ok:
+        raise RuntimeError(f"YouTube feed HTTP {response.status_code}")
+    root = ET.fromstring(response.content)
+    ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
+    if root.tag != "{http://www.w3.org/2005/Atom}feed":
+        raise RuntimeError("YouTube returned an invalid feed")
+    if root.findtext("yt:channelId", namespaces=ns) != channel_id:
+        raise RuntimeError("YouTube feed channel ID does not match the setting")
+    videos = {}
+    for entry in root.findall("atom:entry", ns):
+        video_id = entry.findtext("yt:videoId", default="", namespaces=ns)
+        title = entry.findtext("atom:title", default="", namespaces=ns)
+        published = entry.findtext("atom:published", default="", namespaces=ns)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) or not title or not published:
+            continue
+        videos[video_id] = {
+            "id": video_id, "title": title,
+            "published": datetime.fromisoformat(published.replace("Z", "+00:00")),
+            "author": entry.findtext("atom:author/atom:name", default=channel_id, namespaces=ns),
+        }
+    return sorted(videos.values(), key=lambda video: video["published"])
+
+
+def run_youtube():
+    if not config.YOUTUBE_CHANNEL_ID:
+        print("YouTube tracking disabled: YOUTUBE_CHANNEL_ID is empty")
+        return
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError("缺少 GitHub Secrets: DISCORD_WEBHOOK_URL")
+    channel_id = normalize_youtube_channel(config.YOUTUBE_CHANNEL_ID)
+    videos = fetch_youtube_videos(channel_id)
+    if not videos:
+        print("YouTube: no videos in feed")
+        return
+    state = load_state()
+    accounts = state.setdefault("youtube_channels", {})
+    first_run = channel_id not in accounts
+    seen = list(accounts.get(channel_id, []))
+    if first_run:
+        pending = videos[-1:] if config.SEND_LATEST_ON_FIRST_RUN else []
+    else:
+        pending = [video for video in videos if video["id"] not in set(seen)][:config.MAX_POSTS_PER_RUN]
+    for video in pending:
+        translated = video["title"]
+        if DEEPL_API_KEY:
+            try:
+                translated = translate_with_deepl(video["title"])
+            except Exception:
+                print("YouTube title translation failed; using original title")
+        send_discord_embed({
+            "title": f"{video['author']}｜YouTube 更新"[:256],
+            "url": f"https://www.youtube.com/watch?v={video['id']}",
+            "description": translated[:4000],
+            "fields": [{"name": "原標題", "value": video["title"][:1000], "inline": False}],
+            "image": {"url": f"https://i.ytimg.com/vi/{video['id']}/hqdefault.jpg"},
+            "footer": {"text": f"來源：YouTube {video['author']}"[:2048]},
+        })
+        seen.append(video["id"])
+        accounts[channel_id] = seen[-config.MAX_SEEN_IDS:]
+        write_state(state)
+    if first_run:
+        accounts[channel_id] = [video["id"] for video in videos][-config.MAX_SEEN_IDS:]
+        write_state(state)
+    print(f"YouTube: sent {len(pending)} video(s)")
+
+
+def main():
+    failures = []
+    for name, track in (("X", run_x), ("YouTube", run_youtube)):
+        try:
+            track()
+        except Exception as exc:
+            # Keep one source running even when the other source fails.
+            print(f"{name} tracking failed ({type(exc).__name__})")
+            if isinstance(exc, (ValueError, RuntimeError)):
+                print(str(exc))
+            failures.append(name)
+    if failures:
+        raise RuntimeError("Tracking failed: " + ", ".join(failures))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-name: WWM X to Discord
+name: X and YouTube to Discord
 
 on:
   workflow_dispatch:
@@ -29,11 +29,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Fetch X, translate, send Discord
+      - name: Fetch X and YouTube, translate, send Discord
         env:
+          X_USERNAME: ${{ vars.X_USERNAME }}
+          YOUTUBE_CHANNEL_ID: ${{ vars.YOUTUBE_CHANNEL_ID }}
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL_2: ${{ secrets.DISCORD_WEBHOOK_URL_2 }}
         run: python main.py
 
       - name: Save state

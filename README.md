@@ -1,4 +1,4 @@
-# X / YouTube → DeepL → Discord
+# X / YouTube / 官網新聞 → Discord
 
 Fix:
 TwitterAPI.io returns tweets under:
@@ -39,8 +39,21 @@ handle 會先透過官方 Data API 解析為 ID，再使用該 ID 取得影片�
 
 YouTube 僅透過官方 YouTube Data API v3 解析頻道及檢查新影片。
 啟用 YouTube 追蹤時必須設定 `YOUTUBE_API_KEY`；缺少金鑰會直接報錯。
-通知包含影片連結、縮圖、原標題及 DeepL 翻譯；翻譯不可用時顯示原標題。
+通知只顯示 DeepL 譯文，不附上原文或原標題，來源語言不限。
+翻譯失敗（或 YouTube 缺少 `DEEPL_API_KEY`）時不發送該通知、不標記已讀，留待下次重試。
 X 和 YouTube 都發送到已設定的 Discord 頻道，每 3 小時檢查一次。
+
+## Discord 通知呈現
+
+- X：醒目標題、表情符號、藍色卡片與「👉 查看 X 原始貼文」連結。
+  收集 API 回傳的所有圖片並去重，優先使用完整媒體欄位；每批最多 4 張，超出時接續發送。
+- YouTube：譯文搭配獨立一行的影片直連，由 Discord 自動產生原生影片播放器；不再手動附加封面圖片。
+  播放器內的標題等資訊由 Discord／YouTube 控制，仍可能出現原語言，程式無法單獨翻譯或隱藏。
+  若 Discord 關閉連結預覽、影片限制嵌入或預覽服務異常，仍可透過直連觀看。
+- 新版格式套用於之後發送的通知；已發送的歷史訊息不會自動改寫或補發。
+
+參考 [Discord 原生連結預覽說明](https://discord.com/safety/using-webhooks-and-embeds)
+及 [Webhook API](https://docs.discord.com/developers/resources/webhook#execute-webhook)。
 
 每個 X 帳號及 YouTube 頻道分開保存去重記錄，切回先前追蹤的帳號時沿用其記錄。
 首次追蹤新帳號／頻道只發送目前最新一則，並將當次取得的其他內容記為已讀。
@@ -64,6 +77,22 @@ API 模式讀取頻道 uploads 播放清單中最近最多 50 個項目，通知
 
 安裝 `requirements.txt` 後執行 `python -m unittest discover -s tests -v`。
 測試使用模擬網路回應和臨時狀態檔，不會發送 Discord 訊息或修改正式 `state.json`。
+
+## 繁中官網新聞追蹤
+
+預設啟用 [燕雲十六聲繁中官網新聞頁](https://www.wherewindsmeetgame.com/hmt/news/)，
+與 X、YouTube 共用每 3 小時的 Actions 排程，也可手動執行。
+不需新的 API 金鑰；沿用兩個 Discord Webhook。
+
+- 掃描列表及下一頁，最多 10 頁；超出上限或網頁結構異常時報錯，不更新已讀狀態。
+- 通知包含官方繁中標題、列表摘要、日期、封面及醒目的全文連結。這個固定繁中來源不呼叫 DeepL，也不重複附上其他語言原文；完整內文請點連結閱讀。
+- 第一次只通知最新一篇，並將掃描到的其他文章記為已讀；後續按日期由舊到新，每次最多發送 `MAX_POSTS_PER_RUN` 篇。
+- 使用文章 URL 去重，獨立保存於 `state.json` 的 `official_news`；保留所有已讀新聞 URL，避免掃描歷史分頁時重複通知。同 URL 的內文修改不另行通知。
+- 每篇在兩個頻道都發送成功後才保存進度；失敗留待重試，已成功的頻道可能收到重複通知。
+- 三個來源分別執行，其中一個失敗仍會檢查其他來源。
+
+若要停用，在 Actions Variables 設定 `OFFICIAL_NEWS_ENABLED=false`。
+掃描頁數上限可在 `config.py` 的 `OFFICIAL_NEWS_MAX_PAGES` 調整。
 
 ## 第二個 Discord 頻道
 

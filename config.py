@@ -7,6 +7,8 @@ import os
 # GitHub Actions repository Variables (also usable as local environment variables).
 X_USERNAME = os.environ.get("X_USERNAME", "").strip() or "WhereWindsMeet_"
 YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID", "").strip()
+OFFICIAL_NEWS_ENABLED = os.environ.get("OFFICIAL_NEWS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+OFFICIAL_NEWS_MAX_PAGES = 10
 
 TWITTER_USER_INFO_URL = "https://api.twitterapi.io/twitter/user/info"
 TWITTER_TIMELINE_URL = "https://api.twitterapi.io/twitter/user/tweet_timeline"

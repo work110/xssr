@@ -10,6 +10,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import config
+from news import NEWS_URL, parse_news_page
 
 STATE_FILE = Path("state.json")
 
@@ -412,119 +413,92 @@ def translate_with_deepl(text):
     return result
 
 
-def extract_image(tweet):
+def extract_images(tweet):
     raw = tweet.get("raw") or {}
-
-    # TwitterAPI.io 常見 media 欄位
     candidates = []
-
-    for key in (
-        "media",
-        "medias",
-        "mediaList",
-    ):
-        value = raw.get(key)
-
-        if isinstance(value, list):
-            candidates.extend(value)
-
-    for key in (
-        "entities",
-        "extended_entities",
-        "extendedEntities",
-    ):
+    # Prefer the full media collection over entities, which may contain only a preview.
+    for key in ("extended_entities", "extendedEntities", "entities"):
         container = raw.get(key)
+        if isinstance(container, dict) and isinstance(container.get("media"), list):
+            candidates.extend(container["media"])
+    for key in ("media", "medias", "mediaList"):
+        if isinstance(raw.get(key), list):
+            candidates.extend(raw[key])
 
-        if isinstance(container, dict):
-            media = container.get("media")
-
-            if isinstance(media, list):
-                candidates.extend(media)
-
+    images = []
+    seen = set()
     for item in candidates:
         if not isinstance(item, dict):
             continue
-
-        for key in (
-            "media_url_https",
-            "media_url",
-            "url",
-            "preview_image_url",
-        ):
+        for key in ("media_url_https", "media_url", "preview_image_url", "url"):
             value = item.get(key)
-
-            if (
-                isinstance(value, str)
-                and value.startswith("http")
-            ):
-                return value
-
-    return None
+            if not isinstance(value, str):
+                continue
+            parsed = urlparse(value)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                continue
+            # A media entity's url is often a t.co link, not an image.
+            if key == "url" and not re.search(r"\.(?:jpe?g|png|gif|webp)(?:$|[?:])", value, re.I):
+                continue
+            identity = str(item.get("id_str") or item.get("id") or "")
+            url_identity = parsed._replace(scheme="https", fragment="").geturl()
+            if url_identity not in seen and (not identity or identity not in seen):
+                images.append(value)
+                seen.add(url_identity)
+                if identity:
+                    seen.add(identity)
+            break
+    return images
 
 
 def send_to_discord(tweet):
-    try:
-        translated = translate_with_deepl(
-            tweet["text"]
-        )
-
-        print("DeepL: OK")
-
-    except Exception as e:
-        print(
-            "DeepL failed:",
-            e
-        )
-
-        translated = (
-            "⚠️ 中文翻譯暫時失敗，"
-            "請查看下方原文。"
-        )
-
+    # Let translation failures propagate so tracking retries without posting original text.
+    translated = translate_with_deepl(tweet["text"])
+    images = extract_images(tweet)
     embed = {
-        "title":
-            f"@{config.X_USERNAME}｜{config.DISCORD_TITLE}",
-
-        "url":
-            tweet["url"],
-
-        "description":
-            translated[:4000],
-
-        "fields": [
-            {
-                "name": "原文",
-                "value":
-                    tweet["text"][:1000],
-                "inline": False,
-            }
-        ],
-
-        "footer": {
-            "text":
-                f"{config.DISCORD_FOOTER} @{config.X_USERNAME}"
-        },
+        "title": f"✨ @{config.X_USERNAME}｜{config.DISCORD_TITLE}"[:256],
+        "url": tweet["url"],
+        "description": translated[:4000],
+        "color": 0x1DA1F2,
+        "fields": [{
+            "name": "🔗 精彩內容，點這裡！",
+            "value": f"**[👉 查看 X 原始貼文]({tweet['url']})**",
+            "inline": False,
+        }],
+        "footer": {"text": f"{config.DISCORD_FOOTER} @{config.X_USERNAME}"},
     }
-
-    image = extract_image(tweet)
-
-    if image:
-        embed["image"] = {
-            "url": image
+    content = f"## 📣 X 有新動態啦！\n**@{config.X_USERNAME}**"
+    if images:
+        content += f" ｜ 🖼️ 共 {len(images)} 張圖片，別漏看！"
+    # Small gallery batches also preserve every image if an API returns more than four.
+    for offset in range(0, max(1, len(images)), 4):
+        batch = images[offset:offset + 4]
+        first = dict(embed) if offset == 0 else {
+            "title": f"🖼️ 圖片接著看｜{offset + 1}–{offset + len(batch)} / {len(images)}",
+            "url": tweet["url"], "color": 0x1DA1F2,
         }
-
-    send_discord_embed(embed)
+        embeds = [first]
+        if batch:
+            first["image"] = {"url": batch[0]}
+            embeds.extend({"url": tweet["url"], "image": {"url": url}} for url in batch[1:])
+        send_discord_message(content=content if offset == 0 else "", embeds=embeds)
     print("Discord sent:", tweet["id"])
 
 
 def send_discord_embed(embed):
-    print("[5/5] Sending Discord")
+    send_discord_message(embeds=[embed])
 
+
+def send_discord_message(*, content="", embeds=None):
+    print("[5/5] Sending Discord")
     payload = {
         "username": config.DISCORD_USERNAME,
-        "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
+    if content:
+        payload["content"] = content
+    if embeds:
+        payload["embeds"] = embeds
 
     # Ignore an empty second webhook and avoid sending twice to the same URL.
     webhook_urls = list(dict.fromkeys(
@@ -536,6 +510,7 @@ def send_discord_embed(embed):
             r = SESSION.post(
                 webhook_url,
                 json=payload,
+                params={"wait": "true"},
                 timeout=config.REQUEST_TIMEOUT,
             )
         except requests.RequestException:
@@ -800,20 +775,18 @@ def run_youtube():
     else:
         pending = [video for video in videos if video["id"] not in set(seen)][:config.MAX_POSTS_PER_RUN]
     for video in pending:
-        translated = video["title"]
-        if DEEPL_API_KEY:
-            try:
-                translated = translate_with_deepl(video["title"])
-            except Exception:
-                print("YouTube title translation failed; using original title")
-        send_discord_embed({
-            "title": f"{video['author']}｜YouTube 更新"[:256],
-            "url": f"https://www.youtube.com/watch?v={video['id']}",
-            "description": translated[:4000],
-            "fields": [{"name": "原標題", "value": video["title"][:1000], "inline": False}],
-            "image": {"url": f"https://i.ytimg.com/vi/{video['id']}/hqdefault.jpg"},
-            "footer": {"text": f"來源：YouTube {video['author']}"[:2048]},
-        })
+        if not DEEPL_API_KEY:
+            raise RuntimeError("缺少 GitHub Secrets: DEEPL_API_KEY")
+        translated = translate_with_deepl(video["title"])
+        # A bare URL in content lets Discord generate its native YouTube player.
+        # Do not attach a rich embed/thumbnail or wrap this URL in angle brackets.
+        send_discord_message(content=(
+            f"## 🎬 YouTube 新片上線啦！\n"
+            f"**📺 {video['author'][:100]}**\n\n"
+            f"{translated[:1500]}\n\n"
+            f"**▶️ 點下方播放器開看，或點連結前往 YouTube！**\n"
+            f"https://www.youtube.com/watch?v={video['id']}"
+        ))
         seen.append(video["id"])
         accounts[channel_id] = seen[-config.MAX_SEEN_IDS:]
         write_state(state)
@@ -823,9 +796,68 @@ def run_youtube():
     print(f"YouTube: sent {len(pending)} video(s)")
 
 
+def fetch_official_news():
+    articles = {}
+    visited = set()
+    url = NEWS_URL
+    while url:
+        if url in visited or len(visited) >= config.OFFICIAL_NEWS_MAX_PAGES:
+            raise RuntimeError("官網新聞分頁循環或超出掃描上限，請檢查分頁設定")
+        visited.add(url)
+        response = SESSION.get(url, timeout=config.REQUEST_TIMEOUT)
+        if not response.ok:
+            raise RuntimeError(f"官網新聞 HTTP {response.status_code}")
+        page, url = parse_news_page(response.content.decode("utf-8"), url)
+        for article in page:
+            articles.setdefault(article["url"], article)
+    # Preserve listing order for articles published on the same day.
+    return sorted(articles.values(), key=lambda article: article["date"], reverse=True)
+
+
+def run_official_news():
+    if not config.OFFICIAL_NEWS_ENABLED:
+        print("Official news tracking disabled")
+        return
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError("缺少 GitHub Secrets: DISCORD_WEBHOOK_URL")
+    articles = fetch_official_news()
+    if not articles:
+        raise RuntimeError("官網新聞未取得任何文章")
+    state = load_state()
+    feeds = state.setdefault("official_news", {})
+    first_run = NEWS_URL not in feeds
+    seen = list(feeds.get(NEWS_URL, []))
+    seen_set = set(seen)
+    if first_run:
+        pending = articles[:1] if config.SEND_LATEST_ON_FIRST_RUN else []
+    else:
+        pending = [article for article in reversed(articles) if article["url"] not in seen_set]
+        pending = pending[:config.MAX_POSTS_PER_RUN]
+    for article in pending:
+        embed = {
+            "title": article["title"][:256], "url": article["url"],
+            "description": article["summary"][:4000] or "新公告已送達，點下方連結查看詳情！",
+            "color": 0xD9A441,
+            "fields": [{"name": "📖 江湖新消息，搶先看！",
+                        "value": f"**[👉 前往官網閱讀完整公告]({article['url']})**", "inline": False}],
+            "footer": {"text": f"來源：燕雲十六聲繁中官網｜{article['date']}"},
+        }
+        if article["image"]:
+            embed["image"] = {"url": article["image"]}
+        send_discord_message(content="## 📰 官網有新公告啦！", embeds=[embed])
+        seen.append(article["url"])
+        feeds[NEWS_URL] = seen
+        write_state(state)
+    if first_run:
+        feeds[NEWS_URL] = [article["url"] for article in articles]
+        write_state(state)
+    # Keep all news URLs: scanning archive pages must not resend expired seen IDs.
+    print(f"Official news: scanned {len(articles)}, sent {len(pending)}")
+
+
 def main():
     failures = []
-    for name, track in (("X", run_x), ("YouTube", run_youtube)):
+    for name, track in (("X", run_x), ("YouTube", run_youtube), ("Official news", run_official_news)):
         try:
             track()
         except Exception as exc:

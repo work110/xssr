@@ -1,4 +1,4 @@
-name: X and YouTube to Discord
+name: X, YouTube and Official News to Discord
 
 on:
   workflow_dispatch:
@@ -29,10 +29,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Fetch X and YouTube, translate, send Discord
+      - name: Fetch X, YouTube and official news, send Discord
         env:
           X_USERNAME: ${{ vars.X_USERNAME || secrets.X_USERNAME }}
           YOUTUBE_CHANNEL_ID: ${{ vars.YOUTUBE_CHANNEL_ID || secrets.YOUTUBE_CHANNEL_ID }}
+          OFFICIAL_NEWS_ENABLED: ${{ vars.OFFICIAL_NEWS_ENABLED || 'true' }}
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
           DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}

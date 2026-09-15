@@ -32,9 +32,10 @@ class TrackingTests(unittest.TestCase):
         with patch.object(main.config, "YOUTUBE_CHANNEL_ID", channel), \
              patch.object(main.config, "SEND_LATEST_ON_FIRST_RUN", True), \
              patch.object(main, "DISCORD_WEBHOOK_URL", "https://example.test/webhook"), \
-             patch.object(main, "DEEPL_API_KEY", ""), \
+             patch.object(main, "DEEPL_API_KEY", "test-key"), \
+             patch.object(main, "translate_with_deepl", return_value="影片譯文"), \
              patch.object(main, "fetch_youtube_videos", return_value=videos), \
-             patch.object(main, "send_discord_embed", side_effect=failure) as send:
+             patch.object(main, "send_discord_message", side_effect=failure) as send:
             main.run_youtube()
             return send
 
@@ -109,7 +110,7 @@ class TrackingTests(unittest.TestCase):
     def test_first_run_then_new_videos_and_no_duplicates(self):
         send = self.run_youtube([video(1), video(2)])
         self.assertEqual(send.call_count, 1)
-        self.assertTrue(send.call_args.args[0]['url'].endswith(video(2)['id']))
+        self.assertTrue(send.call_args.kwargs['content'].endswith(video(2)['id']))
         self.assertEqual(self.run_youtube([video(1), video(2)]).call_count, 0)
         self.assertEqual(self.run_youtube([video(1), video(2), video(3)]).call_count, 1)
 
@@ -118,6 +119,27 @@ class TrackingTests(unittest.TestCase):
         self.run_youtube([video(2)], OTHER_CHANNEL)
         self.assertEqual(self.run_youtube([video(1)]).call_count, 0)
         self.assertEqual(len(main.load_state()['youtube_channels']), 2)
+
+    def test_youtube_native_player_uses_bare_url_and_only_translation(self):
+        send = self.run_youtube([video(1)])
+        content = send.call_args.kwargs['content']
+        self.assertIn('影片譯文', content)
+        self.assertNotIn('Video 1', content)
+        self.assertNotIn('embeds', send.call_args.kwargs)
+        self.assertEqual(content.splitlines()[-1], 'https://www.youtube.com/watch?v=00000000001')
+
+    def test_youtube_translation_failure_leaves_video_pending(self):
+        with patch.object(main.config, 'YOUTUBE_CHANNEL_ID', CHANNEL), \
+             patch.object(main, 'DISCORD_WEBHOOK_URL', 'https://example.test/webhook'), \
+             patch.object(main, 'DEEPL_API_KEY', 'test-key'), \
+             patch.object(main.config, 'SEND_LATEST_ON_FIRST_RUN', True), \
+             patch.object(main, 'fetch_youtube_videos', return_value=[video(1)]), \
+             patch.object(main, 'translate_with_deepl', side_effect=RuntimeError('unavailable')), \
+             patch.object(main, 'send_discord_message') as send:
+            with self.assertRaises(RuntimeError):
+                main.run_youtube()
+            send.assert_not_called()
+            self.assertNotIn(CHANNEL, main.load_state().get('youtube_channels', {}))
 
     def test_failure_does_not_mark_video_seen(self):
         self.run_youtube([video(1)])
@@ -145,10 +167,12 @@ class TrackingTests(unittest.TestCase):
             send.assert_not_called()
 
     def test_sources_run_independently(self):
-        with patch.object(main, 'run_x', side_effect=RuntimeError('X unavailable')), patch.object(main, 'run_youtube') as youtube:
+        with patch.object(main, 'run_x', side_effect=RuntimeError('X unavailable')), patch.object(main, 'run_youtube') as youtube, \
+             patch.object(main, 'run_official_news') as news:
             with self.assertRaises(RuntimeError):
                 main.main()
             youtube.assert_called_once()
+            news.assert_called_once()
 
     def test_two_discord_channels_receive_identical_payload(self):
         with patch.object(main, 'DISCORD_WEBHOOK_URL', 'https://example.test/one'), \

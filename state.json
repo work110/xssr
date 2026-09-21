@@ -42,7 +42,8 @@
     "2101350153072624045",
     "2101642545235403117",
     "2101672729435103632",
-    "2101748077082341655"
+    "2101748077082341655",
+    "2102004928151490961"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
@@ -89,10 +90,11 @@
       "2101350153072624045",
       "2101642545235403117",
       "2101672729435103632",
-      "2101748077082341655"
+      "2101748077082341655",
+      "2102004928151490961"
     ]
   },
-  "updated_at": "2026-09-20T20:44:15.783777+00:00",
+  "updated_at": "2026-09-21T12:40:56.358684+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -213,7 +215,9 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/PerilousEminencePatchNotes.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/PerilousEminence.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/920appearance.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/919devletter.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/919devletter.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/921update.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/921devletter.html"
     ]
   }
 }

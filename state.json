@@ -103,7 +103,9 @@
     "2110319662127017986",
     "2110339839107137865",
     "2110394595355836849",
-    "2110414510011846719"
+    "2110414510011846719",
+    "2110453299564392776",
+    "2110463829696233941"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
@@ -211,10 +213,12 @@
       "2110319662127017986",
       "2110339839107137865",
       "2110394595355836849",
-      "2110414510011846719"
+      "2110414510011846719",
+      "2110453299564392776",
+      "2110463829696233941"
     ]
   },
-  "updated_at": "2026-10-14T17:03:22.703739+00:00",
+  "updated_at": "2026-10-14T21:36:12.126425+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -354,7 +358,9 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/1009devletter.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1011appearance.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/PathBalance1015.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/1014devletter.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1014devletter.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/FriendsFromAfarPatchNotes.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/FriendsFromAfar.html"
     ]
   }
 }

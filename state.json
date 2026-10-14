@@ -98,7 +98,9 @@
     "2109645273849094613",
     "2109947262537519265",
     "2109977460196377060",
-    "2110007656958332962"
+    "2110007656958332962",
+    "2110280070048989279",
+    "2110319662127017986"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
@@ -201,10 +203,12 @@
       "2109645273849094613",
       "2109947262537519265",
       "2109977460196377060",
-      "2110007656958332962"
+      "2110007656958332962",
+      "2110280070048989279",
+      "2110319662127017986"
     ]
   },
-  "updated_at": "2026-10-13T16:54:20.191673+00:00",
+  "updated_at": "2026-10-14T11:43:16.064612+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -342,7 +346,8 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/1004appearance.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1011update.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1009devletter.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/1011appearance.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1011appearance.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/PathBalance1015.html"
     ]
   }
 }

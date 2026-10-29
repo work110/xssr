@@ -146,7 +146,11 @@
     "2115398276354842833",
     "2115413271889248647",
     "2115471535758778503",
-    "2115702707621396937"
+    "2115702707621396937",
+    "2115775674237501901",
+    "2115791933146894419",
+    "2115805863877431311",
+    "2115841195230601641"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
@@ -297,10 +301,14 @@
       "2115398276354842833",
       "2115413271889248647",
       "2115471535758778503",
-      "2115702707621396937"
+      "2115702707621396937",
+      "2115775674237501901",
+      "2115791933146894419",
+      "2115805863877431311",
+      "2115841195230601641"
     ]
   },
-  "updated_at": "2026-10-29T09:49:31.555575+00:00",
+  "updated_at": "2026-10-29T18:24:45.729780+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -453,7 +461,8 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/Banreport1026.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1028devletter.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1029patchnotes.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/1029update.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1029update.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1029appearance.html"
     ]
   }
 }

@@ -196,7 +196,10 @@
     "2120501807055040709",
     "2120532003351048535",
     "2120637700524904525",
-    "2120771968987521027"
+    "2120771968987521027",
+    "2120862819897970969",
+    "2120881419107090939",
+    "2120894399613677895"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
@@ -397,10 +400,13 @@
       "2120501807055040709",
       "2120532003351048535",
       "2120637700524904525",
-      "2120771968987521027"
+      "2120771968987521027",
+      "2120862819897970969",
+      "2120881419107090939",
+      "2120894399613677895"
     ]
   },
-  "updated_at": "2026-11-12T07:01:21.802084+00:00",
+  "updated_at": "2026-11-12T17:31:19.449707+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -471,7 +477,8 @@
       "_AdDM3E8tDQ",
       "jMS7kgSYRCM",
       "6CwUoWgn2Dc",
-      "3toEnjy0qHA"
+      "3toEnjy0qHA",
+      "D05DvX64UJk"
     ]
   },
   "official_news": {
@@ -565,7 +572,9 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/1029appearance.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/529update.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1109devletter.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/1113appearance.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1113appearance.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1113PathBalance.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/AcrossAutumnWaters.html"
     ]
   }
 }

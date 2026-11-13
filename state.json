@@ -1,9 +1,5 @@
 {
   "seen": [
-    "2097671362454372519",
-    "2097641175251292470",
-    "2097339187758338432",
-    "2097293875752677421",
     "2096984337107583353",
     "2096954636662124785",
     "2096855222102720690",
@@ -199,15 +195,15 @@
     "2121245448434508046",
     "2121249225891582188",
     "2121249484352954402",
-    "2121273732815843479"
+    "2121273732815843479",
+    "2121295350145450200",
+    "2121296897185120763",
+    "2121300331346931777",
+    "2121352053310300223"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
     "1739103311457079296": [
-      "2097671362454372519",
-      "2097641175251292470",
-      "2097339187758338432",
-      "2097293875752677421",
       "2096984337107583353",
       "2096954636662124785",
       "2096855222102720690",
@@ -403,10 +399,14 @@
       "2121245448434508046",
       "2121249225891582188",
       "2121249484352954402",
-      "2121273732815843479"
+      "2121273732815843479",
+      "2121295350145450200",
+      "2121296897185120763",
+      "2121300331346931777",
+      "2121352053310300223"
     ]
   },
-  "updated_at": "2026-11-13T17:08:00.965428+00:00",
+  "updated_at": "2026-11-13T23:28:27.603002+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -575,7 +575,8 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/1109devletter.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1113appearance.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1113PathBalance.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/AcrossAutumnWaters.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/AcrossAutumnWaters.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/anniversaryletter.html"
     ]
   }
 }

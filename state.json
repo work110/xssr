@@ -1,6 +1,5 @@
 {
   "seen": [
-    "2102397514192167213",
     "2102418007675052306",
     "2102647756892553713",
     "2102759906612789566",
@@ -199,12 +198,12 @@
     "2124835363994915310",
     "2124835366909923419",
     "2124880659608961323",
-    "2124888390663365064"
+    "2124888390663365064",
+    "2125211921398001825"
   ],
   "user_id": "1739103311457079296",
   "x_accounts": {
     "1739103311457079296": [
-      "2102397514192167213",
       "2102418007675052306",
       "2102647756892553713",
       "2102759906612789566",
@@ -403,10 +402,11 @@
       "2124835363994915310",
       "2124835366909923419",
       "2124880659608961323",
-      "2124888390663365064"
+      "2124888390663365064",
+      "2125211921398001825"
     ]
   },
-  "updated_at": "2026-11-24T02:08:14.427657+00:00",
+  "updated_at": "2026-11-24T13:32:28.125124+00:00",
   "youtube_channels": {
     "UCSeYzrPWXjyIBhdk4IuGc-g": [
       "vY9OfUIKOmU",
@@ -579,7 +579,9 @@
       "https://www.wherewindsmeetgame.com/hmt/news/official/anniversaryletter.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1110ama.html",
       "https://www.wherewindsmeetgame.com/hmt/news/official/1122update.html",
-      "https://www.wherewindsmeetgame.com/hmt/news/official/dlss5.html"
+      "https://www.wherewindsmeetgame.com/hmt/news/official/dlss5.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1123DLSS5.html",
+      "https://www.wherewindsmeetgame.com/hmt/news/official/1126appearance.html"
     ]
   }
 }
